@@ -4,6 +4,8 @@ substitutions:
 esphome:
   name: cam-bien-dh-ngu2
   friendly_name: "Cảm biến điều hòa phòng ngủ 2"
+  platformio_options:
+    board_build.f_cpu: 80000000L
   on_boot:
     priority: -10
     then:
@@ -13,8 +15,6 @@ esp32:
   board: esp32-c3-devkitm-1
   framework:
     type: arduino
-  platformio_options:
-    board_build.f_cpu: 80000000L
 
 # 🔇 Logger set to INFO to troubleshoot connection/HTTP push status
 logger:
