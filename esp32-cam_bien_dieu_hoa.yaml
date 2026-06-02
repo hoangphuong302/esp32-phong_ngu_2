@@ -456,7 +456,7 @@ interval:
   # ── 1. Quét GPIO1 mỗi 5 giây — thuần nội bộ, KHÔNG WiFi ──
   # Quét nhanh để phát hiện đảo trạng thái sớm nhất có thể
   # Spike dòng: ~2mA × 60ms = không đáng kể, tụ 2200µF gánh hết
-  - interval: 3s
+  - interval: 1500ms
     then:
       - lambda: |-
           // ════════════════════════════════════════════════════
@@ -531,7 +531,7 @@ interval:
           }
 
   # ── 2. Poll lệnh IR pending mỗi 5 giây — phản hồi nhanh ──
-  - interval: 3s
+  - interval: 1500ms
     then:
       - if:
           condition:
