@@ -555,11 +555,24 @@ interval:
                               id: parse_ir_response
                               body: !lambda return body;
 
-  # ── 3. Push nhiệt/ẩm/áp mỗi 30s — cân bằng giữa tần suất và WiFi TX ──
-  # Tụ 2200µF gánh spike TX, AC board không thấy peak dòng
+  # ── 3. Push nhiệt/ẩm/áp thích ứng (30s nếu bật, 5 phút nếu tắt) ──
   - interval: 30s
     then:
-      - script.execute: push_sensors_to_ha
+      - lambda: |-
+          static int elapsed_ticks = 0;
+          elapsed_ticks++;
+          bool do_push = false;
+          if (id(g_ac_state) == 1) {
+            do_push = true;
+          } else {
+            if (elapsed_ticks >= 10) {
+              do_push = true;
+            }
+          }
+          if (do_push) {
+            elapsed_ticks = 0;
+            id(push_sensors_to_ha).execute();
+          }
 
 remote_transmitter:
   id: main_transmitter
