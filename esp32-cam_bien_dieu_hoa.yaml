@@ -1,0 +1,567 @@
+substitutions:
+  board_type: "esp32-c3-devkitm-1"
+
+esphome:
+  name: cam-bien-dh-ngu2
+  friendly_name: "Cảm biến điều hòa phòng ngủ 2"
+  on_boot:
+    priority: -10
+    then:
+      - script.execute: led_indicator_loop
+
+esp32:
+  board: esp32-c3-devkitm-1
+  framework:
+    type: arduino
+
+# 🔇 Logger set to INFO to troubleshoot connection/HTTP push status
+logger:
+  level: INFO
+  baud_rate: 0
+
+# 📡 ESPHome API — CHỈ giữ để OTA flash, reboot_timeout=0 vì không dùng native API
+api:
+  reboot_timeout: 0s
+  services:
+    - service: transmit_raw
+      variables:
+        command: int[]
+      then:
+        - script.execute: blink_led
+        - remote_transmitter.transmit_raw:
+            carrier_frequency: 38kHz
+            code: !lambda "return command;"
+
+# ✅ HTTP client — ESP32 chủ động PUSH lên nhasam.id.vn
+http_request:
+  useragent: "esphome/cam-bien-pn2"
+  timeout: 10s
+  verify_ssl: false
+
+# ══════════════════════════════════════════════════════════════
+# 🧠 GLOBALS: State machine nội bộ cho GPIO1 — không cần WiFi
+# ══════════════════════════════════════════════════════════════
+globals:
+  # Đếm số lần liên tiếp đọc LED = đang chạy
+  - id: g_on_count
+    type: int
+    restore_value: false
+    initial_value: '0'
+
+  # Đếm số lần liên tiếp đọc LED = đã tắt
+  - id: g_off_count
+    type: int
+    restore_value: false
+    initial_value: '0'
+
+  # Trạng thái đã xác nhận — lưu vào flash để không mất khi khởi động lại
+  # 0 = tắt, 1 = đang chạy
+  - id: g_ac_state
+    type: int
+    restore_value: true
+    initial_value: '0'
+
+  # Nhiệt độ baseline = nhiệt độ miệng gió khi AC TẮT (= nhiệt độ phòng)
+  # Tự động cập nhật mỗi khi state machine xác nhận AC đã tắt
+  # So sánh: outlet_temp < baseline - 4°C → AC đang làm lạnh thật
+  - id: g_baseline_temp
+    type: float
+    restore_value: true
+    initial_value: '30.0'
+
+  # Cờ lưu trạng thái đẩy dữ liệu thành công
+  - id: g_push_ok
+    type: bool
+    restore_value: false
+    initial_value: 'false'
+
+# ══════════════════════════════════════════════════════════════
+# 📦 SCRIPTS: Push sự kiện lên nhasam.id.vn
+# ══════════════════════════════════════════════════════════════
+script:
+  - id: parse_ir_response
+    parameters:
+      body: string
+    then:
+      - lambda: |-
+          if (!body.empty() && body.find("ir_commands") != std::string::npos) {
+            DynamicJsonDocument doc(4096);
+            DeserializationError error = deserializeJson(doc, body);
+            if (!error && doc.containsKey("ir_commands")) {
+              JsonArray ir_cmds = doc["ir_commands"];
+              for (JsonArray cmd : ir_cmds) {
+                std::vector<int32_t> pulses;
+                for (int32_t pulse : cmd) {
+                  pulses.push_back(pulse);
+                }
+                if (!pulses.empty()) {
+                  ESP_LOGI("ir", "Transmitting pending IR command from queue, count: %d", pulses.size());
+                  id(blink_led).execute();
+                  auto call = id(main_transmitter).transmit();
+                  call.get_data()->set_carrier_frequency(38000);
+                  call.get_data()->set_data(pulses);
+                  call.perform();
+                }
+              }
+            }
+          }
+
+  - id: led_indicator_loop
+    mode: restart
+    then:
+      - while:
+          condition:
+            lambda: "return true;"
+          then:
+            - if:
+                condition:
+                  lambda: |-
+                    return id(g_push_ok) && wifi::global_wifi_component->is_connected();
+                then:
+                  # Normal connected & pushing fine: 0.2s ON, 2s OFF
+                  - switch.turn_on: led_8
+                  - switch.turn_on: led_10
+                  - delay: 200ms
+                  - switch.turn_off: led_8
+                  - switch.turn_off: led_10
+                  - delay: 2000ms
+                else:
+                  # Error / disconnected / not pushing: 0.3s ON, 0.3s OFF
+                  - switch.turn_on: led_8
+                  - switch.turn_on: led_10
+                  - delay: 300ms
+                  - switch.turn_off: led_8
+                  - switch.turn_off: led_10
+                  - delay: 300ms
+
+  - id: blink_led
+    then:
+      - script.stop: led_indicator_loop
+      - switch.turn_on: led_8
+      - switch.turn_on: led_10
+      - delay: 50ms
+      - switch.turn_off: led_8
+      - switch.turn_off: led_10
+      - delay: 50ms
+      - switch.turn_on: led_8
+      - switch.turn_on: led_10
+      - delay: 50ms
+      - switch.turn_off: led_8
+      - switch.turn_off: led_10
+      - delay: 50ms
+      - switch.turn_on: led_8
+      - switch.turn_on: led_10
+      - delay: 50ms
+      - switch.turn_off: led_8
+      - switch.turn_off: led_10
+      - script.execute: led_indicator_loop
+
+  # ⚡ Sự kiện: Điều hòa vừa BẬT — payload gọn, chỉ gửi khi đảo trạng thái
+  - id: push_ac_on
+    then:
+      - http_request.post:
+          url: "https://nhasam.id.vn/aura-api/esp-push"
+          capture_response: true
+          request_headers:
+            Content-Type: application/json
+          body: !lambda |-
+            return std::string(
+              "{\"device_key\":\"cam-bien-pn2\","
+              "\"ac_state\":\"on\"}"
+            );
+          on_response:
+            then:
+              - if:
+                  condition:
+                    lambda: return response->status_code == 200;
+                  then:
+                    - lambda: |-
+                        id(g_push_ok) = true;
+                    - script.execute:
+                        id: parse_ir_response
+                        body: !lambda return body;
+                  else:
+                    - lambda: |-
+                        id(g_push_ok) = false;
+                    - logger.log:
+                        level: WARN
+                        format: "[AC ON Push] FAILED - status %d"
+                        args: [response->status_code]
+          on_error:
+            then:
+              - lambda: |-
+                  id(g_push_ok) = false;
+
+  # ⚡ Sự kiện: Điều hòa vừa TẮT
+  - id: push_ac_off
+    then:
+      - http_request.post:
+          url: "https://nhasam.id.vn/aura-api/esp-push"
+          capture_response: true
+          request_headers:
+            Content-Type: application/json
+          body: !lambda |-
+            return std::string(
+              "{\"device_key\":\"cam-bien-pn2\","
+              "\"ac_state\":\"off\"}"
+            );
+          on_response:
+            then:
+              - if:
+                  condition:
+                    lambda: return response->status_code == 200;
+                  then:
+                    - lambda: |-
+                        id(g_push_ok) = true;
+                    - script.execute:
+                        id: parse_ir_response
+                        body: !lambda return body;
+                  else:
+                    - lambda: |-
+                        id(g_push_ok) = false;
+                    - logger.log:
+                        level: WARN
+                        format: "[AC OFF Push] FAILED - status %d"
+                        args: [response->status_code]
+          on_error:
+            then:
+              - lambda: |-
+                  id(g_push_ok) = false;
+
+  # 🌡️ Push nhiệt/ẩm/áp định kỳ — 5 phút/lần
+  # Bao gồm: nhiệt độ phòng (BMP280) + nhiệt độ miệng gió (AHT20) + độ ẩm + áp suất
+  - id: push_sensors_to_ha
+    then:
+      - http_request.post:
+          url: "https://nhasam.id.vn/aura-api/esp-push"
+          capture_response: true
+          request_headers:
+            Content-Type: application/json
+          body: !lambda |-
+            char t_room[32], t_outlet[32], hum[32], pres[32], volt[32];
+            if (std::isnan(id(cb_temp).state)) strcpy(t_room, "null");
+            else snprintf(t_room, sizeof(t_room), "%.2f", id(cb_temp).state);
+
+            if (std::isnan(id(outlet_temp).state)) strcpy(t_outlet, "null");
+            else snprintf(t_outlet, sizeof(t_outlet), "%.2f", id(outlet_temp).state);
+
+            if (std::isnan(id(cb_humi).state)) strcpy(hum, "null");
+            else snprintf(hum, sizeof(hum), "%.1f", id(cb_humi).state);
+
+            if (std::isnan(id(cb_pres).state)) strcpy(pres, "null");
+            else snprintf(pres, sizeof(pres), "%.1f", id(cb_pres).state);
+
+            if (std::isnan(id(led_mean).state)) strcpy(volt, "null");
+            else snprintf(volt, sizeof(volt), "%.3f", id(led_mean).state);
+
+            char buf[768];
+            snprintf(buf, sizeof(buf),
+              "{\"device_key\":\"cam-bien-pn2\","
+              "\"sensors\":{"
+              "\"sensor.cam_bien_dieu_hoa_nhiet_do\":"
+                "{\"state\":%s,\"unit\":\"\\u00b0C\","
+                "\"class\":\"temperature\","
+                "\"name\":\"Nhi\\u1ec7t \\u0111\\u1ed9 ph\\u00f2ng ng\\u1ee7 1\"},"
+              "\"sensor.cam_bien_dieu_hoa_nhiet_mieng_gio\":"
+                "{\"state\":%s,\"unit\":\"\\u00b0C\","
+                "\"class\":\"temperature\","
+                "\"name\":\"Nhi\\u1ec7t \\u0111\\u1ed9 mi\\u1ec7ng gi\\u00f3\"},"
+              "\"sensor.cam_bien_dieu_hoa_do_am\":"
+                "{\"state\":%s,\"unit\":\"%%\","
+                "\"class\":\"humidity\","
+                "\"name\":\"\\u0110\\u1ed9 \\u1ea9m ph\\u00f2ng ng\\u1ee7 1\"},"
+              "\"sensor.cam_bien_dieu_hoa_ap_suat\":"
+                "{\"state\":%s,\"unit\":\"hPa\","
+                "\"class\":\"pressure\","
+                "\"name\":\"\\u00c1p su\\u1ea5t\"},"
+              "\"sensor.cam_bien_dieu_hoa_dien_ap\":"
+                "{\"state\":%s,\"unit\":\"V\","
+                "\"class\":\"voltage\","
+                "\"name\":\"\\u0110i\\u1ec7n \\u00e1p LED\"}"
+              "}}",
+              t_room,
+              t_outlet,
+              hum,
+              pres,
+              volt
+            );
+            return std::string(buf);
+          on_response:
+            then:
+              - if:
+                  condition:
+                    lambda: return response->status_code == 200;
+                  then:
+                    - lambda: |-
+                        id(g_push_ok) = true;
+                    - script.execute:
+                        id: parse_ir_response
+                        body: !lambda return body;
+                  else:
+                    - lambda: |-
+                        id(g_push_ok) = false;
+                    - logger.log:
+                        level: WARN
+                        format: "[Sensor Push] FAILED - status %d"
+                        args: [response->status_code]
+          on_error:
+            then:
+              - lambda: |-
+                  id(g_push_ok) = false;
+
+switch:
+  - platform: gpio
+    pin: GPIO8
+    id: led_8
+    inverted: true
+  - platform: gpio
+    pin: GPIO10
+    id: led_10
+    inverted: true
+
+ota:
+  platform: esphome
+
+wifi:
+  networks:
+    - ssid: "3324 2.4ghz"
+      password: "L@345678"
+      priority: 15
+    - ssid: "3324_2.4ghz"
+      password: "L@345678"
+      priority: 10
+    - ssid: "Phuongbk_2.4Ghz"
+      password: "L@345678"
+      priority: 5
+    - ssid: "phuongbk 2.4ghz"
+      password: "L@345678"
+      priority: 5
+    - ssid: "mcbooks"
+      password: "mcbooks123"
+      priority: 0
+    - ssid: "MCBOOKS"
+      password: "mcbooks123"
+      priority: 0
+    - ssid: "mcbook"
+      password: "mcbooks123"
+      priority: 0
+    - ssid: "MCBOOK"
+      password: "mcbooks123"
+      priority: 0
+
+  # 🔋 NONE: disable power saving to keep Wi-Fi connection highly responsive and stable
+  power_save_mode: NONE
+
+  # 📶 20dB (maximum power) to ensure robust connection coverage
+  output_power: 20dB
+
+  # Kết nối nhanh, không scan lại từ đầu khi đổi IP hoặc mất điện cắm lại
+  fast_connect: true
+
+
+
+  # 🔁 Không tự reboot khi không có ai kết nối vào AP fallback
+  # ESP32 cứ chạy nội bộ, chờ WiFi xuất hiện trở lại
+  reboot_timeout: 0s
+
+  # 📶 AP fallback — chỉ bật khi không tìm được WiFi sau 30s
+  # Tên dễ nhận ra, không cần mật khẩu để truy cập nhanh
+  # Vào 192.168.4.1 để cung cấp WiFi mới cho ESP32
+  ap:
+    ssid: "esp32 dieu hoa ngu 2"
+    # Không có password → kết nối ngay không cần nhập gì
+
+captive_portal:
+
+i2c:
+  sda: GPIO2
+  scl: GPIO3
+  scan: false
+
+sensor:
+  # ── BMP280: Nhiệt độ + Áp suất ──
+  # Tăng interval 60s → 120s: nhiệt độ phòng thay đổi chậm
+  - platform: bmp280_i2c
+    temperature:
+      name: "Nhiệt độ"
+      id: cb_temp
+      filters:
+        - delta: 0.05
+    pressure:
+      name: "Áp suất"
+      id: cb_pres
+      filters:
+        - delta: 1.0
+    address: 0x77
+    update_interval: 30s
+
+  # ── AHT20: Nhiệt độ miệng gió + Độ ẩm ──
+  # Đặt tại miệng phun gió điều hòa:
+  #   AC chạy  → outlet_temp ≈ 14–18°C (lạnh)
+  #   AC tắt   → outlet_temp ≈ 28–32°C (nhiệt độ phòng)
+  # Dùng làm nguồn xác nhận thứ 2 trong state machine
+  - platform: aht10
+    variant: AHT20
+    temperature:
+      name: "Nhiệt độ miệng gió"
+      id: outlet_temp
+      filters:
+        - delta: 0.05
+    humidity:
+      name: "Độ ẩm"
+      id: cb_humi
+      filters:
+        - delta: 1.0
+    address: 0x38
+    update_interval: 30s
+
+  # ── GPIO1 diagnostics: mean và std dev — cập nhật từ interval lambda ──
+  # update_interval: never → chỉ publish khi interval lambda gọi publish_state()
+  - platform: template
+    name: "LED AC Mean"
+    id: led_mean
+    unit_of_measurement: "V"
+    accuracy_decimals: 3
+    update_interval: never
+
+  - platform: template
+    name: "LED AC StdDev"
+    id: led_stddev
+    unit_of_measurement: "V"
+    accuracy_decimals: 3
+    update_interval: never
+
+  # ── Diagnostics ──
+  - platform: uptime
+    name: "Uptime"
+    update_interval: 300s
+
+  - platform: wifi_signal
+    name: "WiFi RSSI"
+    update_interval: 300s
+
+text_sensor:
+  - platform: wifi_info
+    ip_address:
+      name: "IP Address"
+    ssid:
+      name: "Connected SSID"
+
+# ══════════════════════════════════════════════════════════════
+# ⚙️ INTERVALS: Tách riêng scan GPIO1 và push sensor
+# ══════════════════════════════════════════════════════════════
+interval:
+
+  # ── 1. Quét GPIO1 mỗi 5 giây — thuần nội bộ, KHÔNG WiFi ──
+  # Quét nhanh để phát hiện đảo trạng thái sớm nhất có thể
+  # Spike dòng: ~2mA × 60ms = không đáng kể, tụ 2200µF gánh hết
+  - interval: 5s
+    then:
+      - lambda: |-
+          // ════════════════════════════════════════════════════
+          // NGUỒN 1 — GPIO1 (PRIMARY, nhanh, phản hồi tức thì)
+          // ════════════════════════════════════════════════════
+          // Đọc 3 sample trong 60ms — delay() = vTaskDelay() trên ESP32
+          // → yield cho FreeRTOS, WiFi stack vẫn chạy bình thường
+          const int N = 3;
+          float s[N], sum = 0.0f, sq = 0.0f;
+          for (int i = 0; i < N; i++) {
+            s[i] = analogReadMilliVolts(1) / 1000.0f;
+            sum += s[i];
+            if (i < N - 1) delay(30);
+          }
+          float mean = sum / (float)N;
+          for (int i = 0; i < N; i++) sq += (s[i] - mean) * (s[i] - mean);
+          float std_dev = sqrtf(sq / (float)N);
+
+          id(led_mean).publish_state(mean);
+          id(led_stddev).publish_state(std_dev);
+
+          // Active-low: LED sáng → chip kéo cathode về GND → GPIO1 nhảy PWM
+          // LED tắt → chân thả nổi → pull-up ~1.4V ổn định
+          bool gpio_on  = (std_dev > 0.20f);
+          bool gpio_off = (std_dev < 0.08f && mean > 1.1f);
+
+          // ════════════════════════════════════════════════════
+          // NGUỒN 2 — AHT20 (SECONDARY, chậm, xác nhận chắc)
+          // ════════════════════════════════════════════════════
+          // Baseline = nhiệt độ phòng khi AC tắt (tự cập nhật)
+          // drop > 4°C → gió lạnh → AC đang làm lạnh thật
+          // drop < 1.5°C → gió ấm → AC chắc chắn đã tắt
+          float outlet = id(outlet_temp).state;
+          bool temp_valid   = !isnan(outlet);
+          float drop        = id(g_baseline_temp) - outlet;
+          bool temp_says_on  = (temp_valid && drop > 4.0f);
+          bool temp_says_off = (temp_valid && drop < 1.5f);
+
+          // ════════════════════════════════════════════════════
+          // CẬP NHẬT COUNTER
+          // ════════════════════════════════════════════════════
+          if (gpio_on) {
+            id(g_on_count)++;
+            id(g_off_count) = 0;
+          } else if (gpio_off) {
+            id(g_off_count)++;
+            id(g_on_count) = 0;
+          }
+          // AMBIGUOUS: không đổi counter — chờ thêm mẫu rõ hơn
+
+          // ════════════════════════════════════════════════════
+          // NGƯỠNG XÁC NHẬN — Chỉ dựa trên GPIO1
+          // ════════════════════════════════════════════════════
+          int on_threshold = 2;   // 10s nhấp nhô
+          int off_threshold = 3;  // 15s ổn định
+
+          // ════════════════════════════════════════════════════
+          // KẾT LUẬN + PUSH (chỉ khi đảo trạng thái)
+          // ════════════════════════════════════════════════════
+          if (id(g_on_count) >= on_threshold && id(g_ac_state) == 0) {
+            id(g_ac_state) = 1;
+            id(g_on_count) = 0;
+            id(push_ac_on).execute();  // 🔼 OFF → ON
+          }
+
+          if (id(g_off_count) >= off_threshold && id(g_ac_state) == 1) {
+            id(g_ac_state) = 0;
+            id(g_off_count) = 0;
+            // Cập nhật baseline: nhiệt độ phòng thật = outlet_temp lúc AC vừa tắt
+            if (temp_valid) id(g_baseline_temp) = outlet;
+            id(push_ac_off).execute();  // 🔽 ON → OFF
+          }
+
+  # ── 2. Poll lệnh IR pending mỗi 5 giây — phản hồi nhanh ──
+  - interval: 5s
+    then:
+      - if:
+          condition:
+            lambda: return wifi::global_wifi_component->is_connected();
+          then:
+            - http_request.post:
+                url: "https://nhasam.id.vn/aura-api/esp-push"
+                capture_response: true
+                request_headers:
+                  Content-Type: application/json
+                body: !lambda |-
+                  return std::string("{\"device_key\":\"cam-bien-pn2\",\"poll_only\":true}");
+                on_response:
+                  then:
+                    - if:
+                        condition:
+                          lambda: return response->status_code == 200;
+                        then:
+                          - script.execute:
+                              id: parse_ir_response
+                              body: !lambda return body;
+
+  # ── 3. Push nhiệt/ẩm/áp mỗi 30s — cân bằng giữa tần suất và WiFi TX ──
+  # Tụ 2200µF gánh spike TX, AC board không thấy peak dòng
+  - interval: 30s
+    then:
+      - script.execute: push_sensors_to_ha
+
+remote_transmitter:
+  id: main_transmitter
+  pin: GPIO4
+  carrier_duty_percent: 50%
+  carrier_frequency: 38kHz
+  non_blocking: true
