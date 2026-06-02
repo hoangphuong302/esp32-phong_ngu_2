@@ -388,7 +388,7 @@ sensor:
       name: "Nhiệt độ"
       id: cb_temp
       filters:
-        - delta: 0.2
+        - delta: 0.1
     pressure:
       name: "Áp suất"
       id: cb_pres
@@ -408,14 +408,14 @@ sensor:
       name: "Nhiệt độ miệng gió"
       id: outlet_temp
       filters:
-        - delta: 0.2
+        - delta: 0.1
     humidity:
       name: "Độ ẩm"
       id: cb_humi
       filters:
         - delta: 1.0
     address: 0x38
-    update_interval: 60s
+    update_interval: 30s
 
   # ── GPIO1 diagnostics: mean và std dev — cập nhật từ interval lambda ──
   # update_interval: never → chỉ publish khi interval lambda gọi publish_state()
@@ -457,7 +457,7 @@ interval:
   # ── 1. Quét GPIO1 mỗi 5 giây — thuần nội bộ, KHÔNG WiFi ──
   # Quét nhanh để phát hiện đảo trạng thái sớm nhất có thể
   # Spike dòng: ~2mA × 60ms = không đáng kể, tụ 2200µF gánh hết
-  - interval: 5s
+  - interval: 3s
     then:
       - lambda: |-
           // ════════════════════════════════════════════════════
@@ -532,7 +532,7 @@ interval:
           }
 
   # ── 2. Poll lệnh IR pending mỗi 5 giây — phản hồi nhanh ──
-  - interval: 5s
+  - interval: 3s
     then:
       - if:
           condition:
