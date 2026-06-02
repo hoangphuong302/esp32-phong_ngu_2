@@ -31,8 +31,7 @@ api:
       then:
         - script.execute: blink_led
         - remote_transmitter.transmit_raw:
-            carrier_frequency: 38kHz
-            code: !lambda "return command;"
+                      code: !lambda "return command;"
 
 # ✅ HTTP client — ESP32 chủ động PUSH lên nhasam.id.vn
 http_request:
@@ -578,5 +577,4 @@ remote_transmitter:
   id: main_transmitter
   pin: GPIO4
   carrier_duty_percent: 50%
-  carrier_frequency: 38kHz
   non_blocking: true
