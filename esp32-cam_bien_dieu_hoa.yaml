@@ -376,7 +376,7 @@ script:
           request_headers:
             Content-Type: application/json
           body: !lambda |-
-            char volt[32], rssi[32], uptime_s[32], temp[32], humid[32], cpu_s[32];
+            char volt[32], rssi[32], uptime_s[32], temp[32], humid[32], cpu_s[32], local_t[32];
             if (std::isnan(id(led_mean).state)) strcpy(volt, "null");
             else snprintf(volt, sizeof(volt), "%.3f", id(led_mean).state);
 
@@ -395,7 +395,11 @@ script:
             if (std::isnan(id(cpu_temp).state)) strcpy(cpu_s, "null");
             else snprintf(cpu_s, sizeof(cpu_s), "%.1f", id(cpu_temp).state);
 
+            if (std::isnan(id(cb_temp).state)) strcpy(local_t, "null");
+            else snprintf(local_t, sizeof(local_t), "%.2f", id(cb_temp).state);
+
             std::string sensors_json = 
+              "\"sensor.cam_bien_dh_ngu_2_nhiet_do\":{\"state\":" + std::string(local_t) + ",\"unit\":\"\\u00b0C\",\"class\":\"temperature\",\"name\":\"Nhi\\u1ec7t \\u0111\\u1ed9 ph\\u00f2ng ng\\u1ee7 2\"},"
               "\"sensor.cam_bien_dh_ngu_2_dien_ap\":{\"state\":" + std::string(volt) + ",\"unit\":\"V\",\"class\":\"voltage\",\"name\":\"\\u0110i\\u1ec7n \\u00e1p LED\"},"
               "\"sensor.cam_bien_dh_ngu_2_wifi_rssi\":{\"state\":" + std::string(rssi) + ",\"unit\":\"dBm\",\"class\":\"signal_strength\",\"name\":\"WiFi RSSI\"},"
               "\"sensor.cam_bien_dh_ngu_2_uptime\":{\"state\":" + std::string(uptime_s) + ",\"unit\":\"s\",\"class\":\"duration\",\"name\":\"Uptime\"},"
@@ -509,6 +513,12 @@ wifi:
 
 captive_portal:
 
+# 🌡️ Dallas 1-Wire Temperature Sensor (DS18B20) on GPIO3
+one_wire:
+  - platform: gpio
+    pin: GPIO3
+    id: dallas_hub
+
 # 📶 Bluetooth Tracker (Passive Mode to run cool)
 esp32_ble_tracker:
   scan_parameters:
@@ -517,6 +527,11 @@ esp32_ble_tracker:
     active: false
 
 sensor:
+  - platform: dallas_temp
+    one_wire_id: dallas_hub
+    name: "Nhiệt độ phòng ngủ 2"
+    id: cb_temp
+    update_interval: 10s
   - platform: ble_rssi
     mac_address: FF:FF:DE:0D:04:AF
     name: "LED Strip RSSI"
@@ -723,20 +738,22 @@ interval:
       - lambda: |-
           float temp = id(g_xiaomi_temp);
           float hum = id(g_xiaomi_humid);
+          float local_temp = id(cb_temp).state;
           float volt = id(led_mean).state;
           float cpu = id(cpu_temp).state;
           uint32_t uptime = millis() / 1000;
 
-          char t_str[16], h_str[16], v_str[16], cpu_str[16];
+          char t_str[16], h_str[16], local_t_str[16], v_str[16], cpu_str[16];
           if (std::isnan(temp)) strcpy(t_str, "null"); else snprintf(t_str, sizeof(t_str), "%.1f", temp);
           if (std::isnan(hum)) strcpy(h_str, "null"); else snprintf(h_str, sizeof(h_str), "%.1f", hum);
+          if (std::isnan(local_temp)) strcpy(local_t_str, "null"); else snprintf(local_t_str, sizeof(local_t_str), "%.2f", local_temp);
           if (std::isnan(volt)) strcpy(v_str, "null"); else snprintf(v_str, sizeof(v_str), "%.3f", volt);
           if (std::isnan(cpu)) strcpy(cpu_str, "null"); else snprintf(cpu_str, sizeof(cpu_str), "%.1f", cpu);
 
           char entry[256];
           snprintf(entry, sizeof(entry),
-            "{\"uptime\":%u,\"temp\":%s,\"humidity\":%s,\"voltage\":%s,\"cpu_temp\":%s},",
-            uptime, t_str, h_str, v_str, cpu_str
+            "{\"uptime\":%u,\"temp\":%s,\"humidity\":%s,\"local_temp\":%s,\"voltage\":%s,\"cpu_temp\":%s},",
+            uptime, t_str, h_str, local_t_str, v_str, cpu_str
           );
           
           if (id(g_history_json).length() < 12000) {
