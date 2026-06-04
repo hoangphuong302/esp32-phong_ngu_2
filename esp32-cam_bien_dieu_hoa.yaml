@@ -30,6 +30,7 @@ ble_client:
       then:
         - lambda: |-
             id(g_ble_connected) = true;
+            id(g_ble_connecting) = false;
             ESP_LOGI("ble", "BLE LED strip CONNECTED!");
         - delay: 1s
         - lambda: |-
@@ -51,6 +52,7 @@ ble_client:
       then:
         - lambda: |-
             id(g_ble_connected) = false;
+            id(g_ble_connecting) = false;
             ESP_LOGW("ble", "BLE LED strip DISCONNECTED!");
 
 # 📡 ESPHome API — CHỈ giữ để OTA flash, reboot_timeout=0 vì không dùng native API
@@ -76,6 +78,10 @@ http_request:
 # ══════════════════════════════════════════════════════════════
 globals:
   - id: g_ble_connected
+    type: bool
+    restore_value: false
+    initial_value: 'false'
+  - id: g_ble_connecting
     type: bool
     restore_value: false
     initial_value: 'false'
@@ -224,13 +230,15 @@ script:
               if (doc.containsKey("ble_connect")) {
                 bool should_connect = doc["ble_connect"];
                 if (should_connect) {
-                  if (!id(g_ble_connected)) {
+                  if (!id(g_ble_connected) && !id(g_ble_connecting)) {
                     ESP_LOGI("ble", "Server requested BLE connect, connecting...");
+                    id(g_ble_connecting) = true;
                     id(led_strip)->connect();
                   }
                 } else {
-                  if (id(g_ble_connected)) {
+                  if (id(g_ble_connected) || id(g_ble_connecting)) {
                     ESP_LOGI("ble", "Server requested BLE disconnect, disconnecting...");
+                    id(g_ble_connecting) = false;
                     id(led_strip)->disconnect();
                   }
                 }
