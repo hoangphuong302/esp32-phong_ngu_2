@@ -39,6 +39,7 @@ ble_client:
             id(g_ble_connected) = false;
             id(g_ble_connecting) = false;
             ESP_LOGW("ble", "BLE LED strip DISCONNECTED!");
+            id(ble_tracker)->start_scan();
 
 # 🔇 Logger set to DEBUG with filters to prevent verbosity
 logger:
@@ -212,10 +213,6 @@ script:
             }
           }
 
-  - id: restore_wifi
-    then:
-      - wifi.enable:
-
   - id: write_ble_command
     mode: queued
     parameters:
@@ -223,17 +220,17 @@ script:
     then:
       - lambda: |-
           if (!id(g_ble_connected) && !id(g_ble_connecting)) {
-            ESP_LOGI("coexist", "Starting BLE session. Disabling WiFi...");
+            ESP_LOGI("coexist", "Starting BLE session. Stopping BLE scanner...");
             id(g_ble_connecting) = true;
             id(g_last_ble_activity) = millis();
+            id(ble_tracker)->stop_scan();
           }
       - if:
           condition:
             lambda: |-
               return !id(g_ble_connected);
           then:
-            - wifi.disable:
-            - delay: 200ms
+            - delay: 100ms
             - lambda: |-
                 ESP_LOGI("coexist", "Connecting to BLE mouse LED...");
                 id(led_strip)->connect();
@@ -255,7 +252,7 @@ script:
                 characteristic_uuid: 'FFE9'
                 value: !lambda |-
                   return cmd;
-            - delay: 150ms
+            - delay: 100ms
 
   - id: led_indicator_loop
     mode: restart
@@ -752,27 +749,28 @@ interval:
     then:
       - lambda: |-
           uint32_t now = millis();
-          bool need_wifi_restore = false;
+          bool need_session_end = false;
           
-          // 1. Session timeout: disconnect BLE and restore WiFi after 5 seconds of inactivity
-          if (id(g_ble_connected) && (now - id(g_last_ble_activity) > 5000)) {
-            ESP_LOGI("coexist", "BLE session inactive for 5s. Disconnecting BLE...");
+          // 1. Session timeout: disconnect BLE after 2 seconds of inactivity
+          if (id(g_ble_connected) && (now - id(g_last_ble_activity) > 2000)) {
+            ESP_LOGI("coexist", "BLE session inactive for 2s. Disconnecting BLE...");
             id(led_strip)->disconnect();
             id(g_ble_connected) = false;
             id(g_ble_connecting) = false;
-            need_wifi_restore = true;
+            need_session_end = true;
           }
           
-          // 2. Connection timeout: if stuck connecting for > 8s, reset and restore WiFi
+          // 2. Connection timeout: if stuck connecting for > 8s, reset
           if (id(g_ble_connecting) && !id(g_ble_connected) && (now - id(g_last_ble_activity) > 8000)) {
             ESP_LOGE("coexist", "BLE connection timeout. Disconnecting BLE...");
             id(led_strip)->disconnect();
             id(g_ble_connecting) = false;
-            need_wifi_restore = true;
+            need_session_end = true;
           }
           
-          if (need_wifi_restore) {
-            id(restore_wifi).execute();
+          if (need_session_end) {
+            ESP_LOGI("coexist", "BLE session ended. Restarting BLE tracker...");
+            id(ble_tracker)->start_scan();
           }
 
 remote_transmitter:
