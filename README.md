@@ -129,6 +129,32 @@ Khi người dùng bấm nút trên HA (hoặc automation chạy), HA gọi serv
    - Khi giải mã các chuỗi Broadlink Base64 (thường chứa mảng số nguyên toàn bộ là số dương), **bắt buộc phải đổi dấu các phần tử ở vị trí lẻ (chỉ số 1, 3, 5...) thành dấu âm** (Ví dụ: `[9000, -4500, 560, -560, 560, -1680]`). 
    - Nếu gửi mảng toàn bộ số dương cho ESPHome, nó sẽ phát một dải sóng mang liên tục không có khoảng nghỉ, dẫn đến việc điều hòa bỏ qua lệnh.
 
+3. **Cơ chế Mã hóa Giao thức Điều hòa Midea (Midea AC IR Protocol)**:
+   Mã lệnh hồng ngoại của điều hòa Midea sử dụng giao thức truyền **48-bit (6 bytes)** với cơ chế kiểm tra lỗi bitwise đảo ngược và lặp lại hai khung truyền (double frame).
+   
+   - **Cấu trúc Khung Dữ liệu (6 Bytes)**:
+     - **Byte 0**: Mã định danh hãng (Custom Code) cố định là `4D` (nhận diện LSB-first).
+     - **Byte 1**: Mã kiểm tra định danh hãng cố định là `B2` (đảo ngược bitwise của `4D` để chống nhiễu).
+     - **Byte 2**: Tốc độ quạt (Fan speed) & Chế độ hoạt động (Mode).
+       - **Auto speed**: `FD` (nibble quạt `1011` LSB-first)
+       - **Low speed**: `F9` (nibble quạt `1001` LSB-first)
+       - **Mid speed**: `FA` (nibble quạt `0101` LSB-first)
+       - **High speed**: `FC` (nibble quạt `0011` LSB-first)
+     - **Byte 3**: Mã kiểm tra lỗi tốc độ quạt & chế độ (đảo ngược bitwise của Byte 2).
+     - **Byte 4**: Nhiệt độ cài đặt & cấu hình phụ (Ví dụ: `03` tương ứng với 25°C chế độ Cool).
+     - **Byte 5**: Mã kiểm tra lỗi nhiệt độ (đảo ngược bitwise của Byte 4).
+   
+   - **Quy tắc Mã hóa Độ rộng Xung (Pulse Width Modulation)**:
+     - **Tần số sóng mang (Carrier)**: 38kHz.
+     - **Khung truyền**: Phát 2 khung giống hệt nhau (Frame 1 và Frame 2) ngăn cách bởi khoảng nghỉ trung gian `inter_frame_space` khoảng `-5220 us`.
+     - **Xung Header**: Xung dương `4380 us` (Mark) theo sau bởi xung âm `-4400 us` (Space).
+     - **Logic 0**: Xung dương `540 us` theo sau bởi xung âm `-560 us`.
+     - **Logic 1**: Xung dương `540 us` theo sau bởi xung âm `-1650 us`.
+     - **Xung kết thúc (Stop Bit)**: Xung dương `540 us` và kết thúc toàn chuỗi bằng xung âm `-65535 us`.
+   
+   - **⚠️ Lưu ý về lỗi quạt gió High khi bật điều hòa**:
+     Trong các bộ cấu hình SmartIR (như file `1383.json` cũ), tốc độ `low` thường bị nhầm lẫn với tốc độ `auto` (Byte 2 = `FD` thay vị `F9`). Khi phòng đang nóng và điều hòa nhận lệnh quạt `auto`, nó sẽ tự động chạy ở tốc độ gió tối đa (High) để làm mát nhanh, gây hiểu lầm là điều hòa chạy sai tốc độ. Việc sửa Byte 2 thành `F9` giúp điều hòa chạy đúng tốc độ gió thấp nhẹ nhàng ngay khi bật.
+
 ESP32 nhận lệnh, phát tín hiệu IR qua GPIO4, đồng thời **nháy 2 LED trong 80ms** để báo hiệu đã xử lý.
 
 
