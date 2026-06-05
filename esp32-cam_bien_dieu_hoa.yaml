@@ -374,7 +374,7 @@ script:
           request_headers:
             Content-Type: application/json
           body: !lambda |-
-            char t_room[32], volt[32];
+            char t_room[32], volt[32], cpu_s[32];
             char xiaomi_t[32], xiaomi_h[32], xiaomi_b[32];
             if (std::isnan(id(cb_temp).state)) strcpy(t_room, "null");
             else snprintf(t_room, sizeof(t_room), "%.2f", id(cb_temp).state);
@@ -391,7 +391,10 @@ script:
             if (std::isnan(id(xiaomi_bat).state)) strcpy(xiaomi_b, "null");
             else snprintf(xiaomi_b, sizeof(xiaomi_b), "%.1f", id(xiaomi_bat).state);
 
-            char buf[1024];
+            if (std::isnan(id(cpu_temp).state)) strcpy(cpu_s, "null");
+            else snprintf(cpu_s, sizeof(cpu_s), "%.1f", id(cpu_temp).state);
+
+            char buf[1280];
             snprintf(buf, sizeof(buf),
               "{\"device_key\":\"cam-bien-pn2\","
               "\"sensors\":{"
@@ -414,13 +417,18 @@ script:
               "\"sensor.miaomiaoce_t2_aaaf_battery\":"
                 "{\"state\":%s,\"unit\":\"%%\","
                 "\"class\":\"battery\","
-                "\"name\":\"Pin C\\u1ea3m Bi\\u1ebfn Ban C\u00f4ng\"}"
+                "\"name\":\"Pin C\\u1ea3m Bi\\u1ebfn Ban C\u00f4ng\"},"
+              "\"sensor.cam_bien_dh_ngu_2_nhiet_do_cpu\":"
+                "{\"state\":%s,\"unit\":\"\\u00b0C\","
+                "\"class\":\"temperature\","
+                "\"name\":\"Nhi\\u1ec7t \\u0111\\u1ed9 CPU\"}"
               "}}",
               t_room,
               volt,
               xiaomi_t,
               xiaomi_h,
-              xiaomi_b
+              xiaomi_b,
+              cpu_s
             );
             return std::string(buf);
           on_response:
@@ -569,6 +577,11 @@ sensor:
   - platform: wifi_signal
     name: "WiFi RSSI"
     update_interval: 300s
+
+  - platform: internal_temperature
+    name: "Nhiệt độ CPU"
+    id: cpu_temp
+    update_interval: 900s
 
 text_sensor:
   - platform: wifi_info
