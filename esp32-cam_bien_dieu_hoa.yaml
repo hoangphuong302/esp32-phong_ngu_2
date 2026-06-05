@@ -568,10 +568,10 @@ interval:
           id(led_mean).publish_state(mean);
           id(led_stddev).publish_state(std_dev);
 
-          // Active-low: LED sáng → chip kéo cathode về GND → GPIO1 nhảy PWM
-          // LED tắt → chân thả nổi → pull-up ~1.4V ổn định
-          bool gpio_on  = (std_dev > 0.20f);
-          bool gpio_off = (std_dev < 0.08f && mean > 1.1f);
+          // Active-low: LED sáng → chip kéo cathode về GND → điện áp thấp < 0.8V
+          // LED tắt → chân thả nổi → pull-up cao > 1.0V ổn định
+          bool gpio_on  = (mean < 0.8f);
+          bool gpio_off = (mean > 1.0f);
 
           // Phòng ngủ 2: không có AHT20, chỉ dùng GPIO1 để xác nhận
 
