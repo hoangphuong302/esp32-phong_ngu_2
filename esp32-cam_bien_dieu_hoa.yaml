@@ -803,5 +803,4 @@ remote_transmitter:
   id: main_transmitter
   pin: GPIO4
   carrier_duty_percent: 50%
-  carrier_frequency: 38kHz
   non_blocking: true
