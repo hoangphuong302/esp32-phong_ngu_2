@@ -75,17 +75,24 @@ Mạch LED báo trạng thái của điều hòa dùng kiểu kích hoạt mức
 * Khi người dùng nhấn nút đặt nhiệt độ hoặc tốc độ gió trên Web nhà Sam, Proxy Server (`aura_tailnet_proxy.mjs`) sẽ lưu các giá trị này vào bộ nhớ `lastAcSettings` theo từng phòng.
 * Khi ESP32 phát hiện điều hòa bật lên qua cảm biến điện áp GPIO1, nó sẽ đẩy trạng thái `ac_state: "on"`. Proxy sẽ nhận bản tin này, lấy cấu hình đã lưu trong `lastAcSettings` để nạp ngược lại thực thể điều hòa trên Home Assistant, giúp hiển thị chính xác thông số cài đặt trước đó của người dùng.
 
-### 4. Cơ chế điều khiển LED Chuột qua BLE & Software Coexistence
-* ESP32 được cấu hình như một **BLE Client** để kết nối và điều khiển dải LED RGB của Chuột qua Bluetooth Low Energy (sử dụng service UUID `FFE5` và characteristic UUID `FFE9`).
-* **⚠️ Vấn đề xung đột phần cứng**: Bộ thu phát Bluetooth BLE hoạt động trên băng tần 2.4GHz gây ra các ngắt (Interrupts) liên tục. Các ngắt BLE này có thể làm gián đoạn bộ đệm RMT (Remote Control) phần cứng của ESP32 đang phát xung hồng ngoại IR điều hòa ở chân GPIO4, gây méo xung IR khiến điều hòa không nhận lệnh.
-* **Cơ chế chung sống phần mềm (Software Coexistence)**:
-  Để bảo vệ toàn vẹn khung truyền IR, trước khi phát tín hiệu hồng ngoại, ESP32 sẽ:
-  1. Kiểm tra trạng thái kết nối BLE, nếu đang kết nối thì chủ động ngắt kết nối BLE Client.
-  2. Tạm dừng quét BLE (`id(ble_tracker)->stop_scan();`).
-  3. Chờ `50ms` để các tác vụ BLE giải phóng CPU hoàn toàn.
-  4. Thực hiện phát tín hiệu IR điều hòa qua mắt phát hồng ngoại (xung 38kHz).
-  5. Chờ `200ms` đảm bảo sóng IR đã truyền xong.
-  6. Khởi động lại quét BLE (`id(ble_tracker)->start_scan();`) và tự động kết nối lại BLE Client nếu có.
+### 4. Cơ chế điều khiển LED Chuột qua BLE & Coexistence (WiFi/BLE/IR)
+* ESP32 được cấu hình như một **BLE Client** để kết nối và điều khiển dải LED RGB của Chuột qua Bluetooth Low Energy (sử dụng service UUID FFE5 và characteristic UUID FFE9).
+* **⚠️ Vấn đề xung đột phần cứng**: ESP32-C3 chỉ có 1 anten radio chia sẻ chung giữa WiFi và BLE. Khi bật cả hai kết nối cùng lúc, chúng sẽ tranh chấp anten dữ dội gây rớt kết nối WiFi hoặc lỗi kết nối BLE. Ngoài ra, các ngắt BLE còn làm méo xung hồng ngoại phát ra ở chân GPIO4.
+* **Cơ chế chung sống (Coexistence) và Tạm ngưng WiFi**:
+  Để đảm bảo hoạt động tối ưu và không bị xung đột, thiết bị thực hiện các logic sau:
+  1. **Khi phát xung hồng ngoại IR (Điều hòa)**:
+     - Kiểm tra trạng thái BLE, chủ động ngắt kết nối BLE Client.
+     - Tạm dừng quét BLE (id(ble_tracker)->stop_scan();).
+     - Chờ 50ms rồi phát xung IR. Sau khi phát xong, chờ tiếp 200ms mới khôi phục quét BLE.
+  2. **🆕 Khi nhận lệnh điều khiển LED chuột (BLE)**:
+     - Tạm ngắt kết nối và tắt sóng WiFi (wifi.disable).
+     - Chờ 200ms để giải phóng hoàn toàn anten cho BLE.
+     - Thực hiện kết nối BLE và ghi lệnh điều khiển (le_client.ble_write).
+     - Cập nhật thời điểm hoạt động BLE cuối cùng (g_last_ble_activity).
+  3. **Tự động giải phóng & Khôi phục WiFi (Timeout)**:
+     - Một bộ hẹn giờ 1s ngầm liên tục giám sát.
+     - **Inactivity Timeout**: Sau 5 giây không có thêm lệnh điều khiển LED chuột mới, thiết bị tự động ngắt kết nối BLE và bật lại WiFi (wifi.enable).
+     - **Connection Timeout**: Nếu quá trình kết nối BLE bị treo hoặc lỗi quá 8 giây, thiết bị cũng tự động ngắt kết nối BLE và bật lại WiFi để tránh bị cô lập mạng.
 
 ### 5. Điều khiển điều hòa qua IR (Chuẩn phát xung hồng ngoại)
 Khi người dùng điều khiển từ giao diện, Home Assistant hoặc Proxy sẽ gọi dịch vụ phát xung hồng ngoại dưới dạng mảng số nguyên có dấu (`std::vector<int32_t>`):

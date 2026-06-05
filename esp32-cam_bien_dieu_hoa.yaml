@@ -131,6 +131,12 @@ globals:
     restore_value: false
     initial_value: 'false'
 
+  # Thời điểm hoạt động BLE cuối cùng
+  - id: g_last_ble_activity
+    type: uint32_t
+    restore_value: false
+    initial_value: '0'
+
 # ══════════════════════════════════════════════════════════════
 # 📦 SCRIPTS: Push sự kiện lên nhasam.id.vn
 # ══════════════════════════════════════════════════════════════
@@ -203,24 +209,12 @@ script:
                   }
                 }
               }
-              if (doc.containsKey("ble_connect")) {
-                bool should_connect = doc["ble_connect"];
-                if (should_connect) {
-                  if (!id(g_ble_connected) && !id(g_ble_connecting)) {
-                    ESP_LOGI("ble", "Server requested BLE connect, connecting...");
-                    id(g_ble_connecting) = true;
-                    id(led_strip)->connect();
-                  }
-                } else {
-                  if (id(g_ble_connected) || id(g_ble_connecting)) {
-                    ESP_LOGI("ble", "Server requested BLE disconnect, disconnecting...");
-                    id(g_ble_connecting) = false;
-                    id(led_strip)->disconnect();
-                  }
-                }
-              }
             }
           }
+
+  - id: restore_wifi
+    then:
+      - wifi.enable:
 
   - id: write_ble_command
     mode: queued
@@ -228,19 +222,40 @@ script:
       cmd: std::vector<uint8_t>
     then:
       - lambda: |-
-          std::string hex = "";
-          for (auto b : cmd) {
-            char buf[4];
-            snprintf(buf, sizeof(buf), "%02X ", b);
-            hex += buf;
+          if (!id(g_ble_connected) && !id(g_ble_connecting)) {
+            ESP_LOGI("coexist", "Starting BLE session. Disabling WiFi...");
+            id(g_ble_connecting) = true;
+            id(g_last_ble_activity) = millis();
           }
-          ESP_LOGI("ble", "BLE TX (%d bytes): %s", cmd.size(), hex.c_str());
-      - ble_client.ble_write:
-          id: led_strip
-          service_uuid: 'FFE5'
-          characteristic_uuid: 'FFE9'
-          value: !lambda |-
-            return cmd;
+      - if:
+          condition:
+            lambda: |-
+              return !id(g_ble_connected);
+          then:
+            - wifi.disable:
+            - delay: 200ms
+            - lambda: |-
+                ESP_LOGI("coexist", "Connecting to BLE mouse LED...");
+                id(led_strip)->connect();
+            - wait_until:
+                condition:
+                  lambda: |-
+                    return id(g_ble_connected) || !id(g_ble_connecting);
+                timeout: 4s
+      - if:
+          condition:
+            lambda: |-
+              return id(g_ble_connected);
+          then:
+            - lambda: |-
+                id(g_last_ble_activity) = millis();
+            - ble_client.ble_write:
+                id: led_strip
+                service_uuid: 'FFE5'
+                characteristic_uuid: 'FFE9'
+                value: !lambda |-
+                  return cmd;
+            - delay: 150ms
 
   - id: led_indicator_loop
     mode: restart
@@ -722,6 +737,33 @@ interval:
           if (need_push && wifi::global_wifi_component->is_connected()) {
             last_push = now;
             id(push_sensors_to_ha).execute();
+          }
+
+  - interval: 1s
+    then:
+      - lambda: |-
+          uint32_t now = millis();
+          bool need_wifi_restore = false;
+          
+          // 1. Session timeout: disconnect BLE and restore WiFi after 5 seconds of inactivity
+          if (id(g_ble_connected) && (now - id(g_last_ble_activity) > 5000)) {
+            ESP_LOGI("coexist", "BLE session inactive for 5s. Disconnecting BLE...");
+            id(led_strip)->disconnect();
+            id(g_ble_connected) = false;
+            id(g_ble_connecting) = false;
+            need_wifi_restore = true;
+          }
+          
+          // 2. Connection timeout: if stuck connecting for > 8s, reset and restore WiFi
+          if (id(g_ble_connecting) && !id(g_ble_connected) && (now - id(g_last_ble_activity) > 8000)) {
+            ESP_LOGE("coexist", "BLE connection timeout. Disconnecting BLE...");
+            id(led_strip)->disconnect();
+            id(g_ble_connecting) = false;
+            need_wifi_restore = true;
+          }
+          
+          if (need_wifi_restore) {
+            id(restore_wifi).execute();
           }
 
 remote_transmitter:
