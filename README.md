@@ -21,6 +21,7 @@ Thiết bị đặt cố định tại **Phòng Ngủ 2** tại nhà Sam. Chip E
 - **Tự động điều chỉnh tần số quét** thích ứng (Adaptive Frequency): 5s khi có lệnh điều khiển IR, 60s bình thường.
 - Tự gửi dữ liệu qua HTTPS, không phụ thuộc bất kỳ máy nào cùng mạng LAN
 - Khôi phục tự động khi mất WiFi qua fallback AP
+- **Đọc dữ liệu cảm biến nhiệt ẩm Xiaomi (Miaomiaoce T2)** qua BLE (sniff passive quảng cáo BLE có mã hóa bindkey), lọc tần suất cập nhật chậm 2 phút/lần và đẩy lên Home Assistant thành cảm biến ban công.
 
 ---
 
@@ -91,6 +92,13 @@ Khi người dùng điều khiển từ giao diện, Home Assistant hoặc Proxy
 - **Số dương**: Thời gian phát sóng mang 38kHz (Mark).
 - **Số âm**: Thời gian nghỉ/tắt sóng mang (Space).
 - **Giao thức Midea AC**: Sử dụng khung truyền 48-bit (6 bytes), gửi hai khung truyền giống hệt nhau ngăn cách bởi khoảng nghỉ `-5220 us`. Các xung bắt đầu (Header), Logic 0, Logic 1, Stop bit được cấu hình chính xác theo thông số chuẩn của hãng.
+
+
+### 6. Cơ chế đọc cảm biến nhiệt ẩm Xiaomi qua BLE
+* Thiết bị Bedroom 2 nằm gần ban công, nơi đặt cảm biến nhiệt ẩm Xiaomi (Miaomiaoce T2, MAC: `A4:C1:38:50:AA:AF`).
+* ESP32 sử dụng driver `xiaomi_lywsd03mmc` tích hợp sẵn trong ESPHome để nhận các bản tin quảng cáo Bluetooth (MiBeacon) có mã hóa.
+* Bản tin được giải mã trực tiếp trên ESP32 bằng Bindkey: `e0b40d6a649749b3116cd9326f00a2b5`.
+* **Lọc tần số chậm**: Để tiết kiệm băng thông và tài nguyên hệ thống, dữ liệu từ cảm biến Xiaomi được áp dụng bộ lọc `throttle: 120s` (chỉ cập nhật tối đa 2 phút một lần). Dữ liệu này sau đó được đẩy chung vào bản tin HTTP Post định kỳ lên Home Assistant.
 
 ---
 
