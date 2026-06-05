@@ -239,51 +239,27 @@ script:
           request_headers:
             Content-Type: application/json
           body: !lambda |-
-            char t_room[32], t_outlet[32], hum[32], pres[32], volt[32];
+            char t_room[32], volt[32];
             if (std::isnan(id(cb_temp).state)) strcpy(t_room, "null");
             else snprintf(t_room, sizeof(t_room), "%.2f", id(cb_temp).state);
-
-            if (std::isnan(id(outlet_temp).state)) strcpy(t_outlet, "null");
-            else snprintf(t_outlet, sizeof(t_outlet), "%.2f", id(outlet_temp).state);
-
-            if (std::isnan(id(cb_humi).state)) strcpy(hum, "null");
-            else snprintf(hum, sizeof(hum), "%.1f", id(cb_humi).state);
-
-            if (std::isnan(id(cb_pres).state)) strcpy(pres, "null");
-            else snprintf(pres, sizeof(pres), "%.1f", id(cb_pres).state);
 
             if (std::isnan(id(led_mean).state)) strcpy(volt, "null");
             else snprintf(volt, sizeof(volt), "%.3f", id(led_mean).state);
 
-            char buf[768];
+            char buf[512];
             snprintf(buf, sizeof(buf),
               "{\"device_key\":\"cam-bien-pn2\","
               "\"sensors\":{"
-              "\"sensor.cam_bien_dieu_hoa_nhiet_do\":"
+              "\"sensor.cam_bien_dh_ngu2_nhiet_do\":"
                 "{\"state\":%s,\"unit\":\"\\u00b0C\","
                 "\"class\":\"temperature\","
-                "\"name\":\"Nhi\\u1ec7t \\u0111\\u1ed9 ph\\u00f2ng ng\\u1ee7 1\"},"
-              "\"sensor.cam_bien_dieu_hoa_nhiet_mieng_gio\":"
-                "{\"state\":%s,\"unit\":\"\\u00b0C\","
-                "\"class\":\"temperature\","
-                "\"name\":\"Nhi\\u1ec7t \\u0111\\u1ed9 mi\\u1ec7ng gi\\u00f3\"},"
-              "\"sensor.cam_bien_dieu_hoa_do_am\":"
-                "{\"state\":%s,\"unit\":\"%%\","
-                "\"class\":\"humidity\","
-                "\"name\":\"\\u0110\\u1ed9 \\u1ea9m ph\\u00f2ng ng\\u1ee7 1\"},"
-              "\"sensor.cam_bien_dieu_hoa_ap_suat\":"
-                "{\"state\":%s,\"unit\":\"hPa\","
-                "\"class\":\"pressure\","
-                "\"name\":\"\\u00c1p su\\u1ea5t\"},"
-              "\"sensor.cam_bien_dieu_hoa_dien_ap\":"
+                "\"name\":\"Nhi\\u1ec7t \\u0111\\u1ed9 ph\\u00f2ng ng\\u1ee7 2\"},"
+              "\"sensor.cam_bien_dh_ngu2_dien_ap\":"
                 "{\"state\":%s,\"unit\":\"V\","
                 "\"class\":\"voltage\","
                 "\"name\":\"\\u0110i\\u1ec7n \\u00e1p LED\"}"
               "}}",
               t_room,
-              t_outlet,
-              hum,
-              pres,
               volt
             );
             return std::string(buf);
@@ -374,47 +350,21 @@ wifi:
 
 captive_portal:
 
-i2c:
-  sda: GPIO2
-  scl: GPIO3
-  scan: false
+# 🌡️ Dallas 1-Wire Temperature Sensor (DS18B20) on GPIO3
+one_wire:
+  - platform: gpio
+    pin: GPIO3
+    id: dallas_hub
 
 sensor:
-  # ── BMP280: Nhiệt độ + Áp suất ──
-  # Tăng interval 60s → 120s: nhiệt độ phòng thay đổi chậm
-  - platform: bmp280_i2c
-    temperature:
-      name: "Nhiệt độ"
-      id: cb_temp
-      filters:
-        - delta: 0.1
-    pressure:
-      name: "Áp suất"
-      id: cb_pres
-      filters:
-        - delta: 1.0
-    address: 0x77
+  # ── DS18B20: Nhiệt độ phòng ngủ 2 ──
+  - platform: dallas_temp
+    one_wire_id: dallas_hub
+    name: "Nhiệt độ phòng ngủ 2"
+    id: cb_temp
     update_interval: 60s
-
-  # ── AHT20: Nhiệt độ miệng gió + Độ ẩm ──
-  # Đặt tại miệng phun gió điều hòa:
-  #   AC chạy  → outlet_temp ≈ 14–18°C (lạnh)
-  #   AC tắt   → outlet_temp ≈ 28–32°C (nhiệt độ phòng)
-  # Dùng làm nguồn xác nhận thứ 2 trong state machine
-  - platform: aht10
-    variant: AHT20
-    temperature:
-      name: "Nhiệt độ miệng gió"
-      id: outlet_temp
-      filters:
-        - delta: 0.1
-    humidity:
-      name: "Độ ẩm"
-      id: cb_humi
-      filters:
-        - delta: 1.0
-    address: 0x38
-    update_interval: 30s
+    filters:
+      - delta: 0.1
 
   # ── GPIO1 diagnostics: mean và std dev — cập nhật từ interval lambda ──
   # update_interval: never → chỉ publish khi interval lambda gọi publish_state()
@@ -483,17 +433,7 @@ interval:
           bool gpio_on  = (std_dev > 0.20f);
           bool gpio_off = (std_dev < 0.08f && mean > 1.1f);
 
-          // ════════════════════════════════════════════════════
-          // NGUỒN 2 — AHT20 (SECONDARY, chậm, xác nhận chắc)
-          // ════════════════════════════════════════════════════
-          // Baseline = nhiệt độ phòng khi AC tắt (tự cập nhật)
-          // drop > 4°C → gió lạnh → AC đang làm lạnh thật
-          // drop < 1.5°C → gió ấm → AC chắc chắn đã tắt
-          float outlet = id(outlet_temp).state;
-          bool temp_valid   = !isnan(outlet);
-          float drop        = id(g_baseline_temp) - outlet;
-          bool temp_says_on  = (temp_valid && drop > 4.0f);
-          bool temp_says_off = (temp_valid && drop < 1.5f);
+          // Phòng ngủ 2: không có AHT20, chỉ dùng GPIO1 để xác nhận
 
           // ════════════════════════════════════════════════════
           // CẬP NHẬT COUNTER
@@ -525,8 +465,6 @@ interval:
           if (id(g_off_count) >= off_threshold && id(g_ac_state) == 1) {
             id(g_ac_state) = 0;
             id(g_off_count) = 0;
-            // Cập nhật baseline: nhiệt độ phòng thật = outlet_temp lúc AC vừa tắt
-            if (temp_valid) id(g_baseline_temp) = outlet;
             id(push_ac_off).execute();  // 🔽 ON → OFF
           }
 
