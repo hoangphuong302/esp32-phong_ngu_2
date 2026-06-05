@@ -16,10 +16,41 @@ esp32:
   framework:
     type: arduino
 
-# 🔇 Logger set to INFO to troubleshoot connection/HTTP push status
+esp32_ble_tracker:
+  id: ble_tracker
+  scan_parameters:
+    interval: 1100ms
+    window: 1100ms
+    active: false
+
+ble_client:
+  - mac_address: FF:FF:DE:0D:04:AF
+    id: led_strip
+    auto_connect: false
+    on_connect:
+      then:
+        - lambda: |-
+            id(g_ble_connected) = true;
+            id(g_ble_connecting) = false;
+            ESP_LOGI("ble", "BLE LED strip CONNECTED!");
+    on_disconnect:
+      then:
+        - lambda: |-
+            id(g_ble_connected) = false;
+            id(g_ble_connecting) = false;
+            ESP_LOGW("ble", "BLE LED strip DISCONNECTED!");
+
+# 🔇 Logger set to DEBUG with filters to prevent verbosity
 logger:
-  level: WARN
+  level: DEBUG
   baud_rate: 0
+  logs:
+    esp32_ble_tracker: DEBUG
+    sensor: INFO
+    adc: INFO
+    i2c: INFO
+    wifi: INFO
+    http_request: INFO
 
 # 📡 ESPHome API — CHỈ giữ để OTA flash, reboot_timeout=0 vì không dùng native API
 api:
@@ -76,6 +107,30 @@ globals:
     restore_value: false
     initial_value: 'false'
 
+  # Cờ đẩy sensor nhanh khi có lệnh IR từ web
+  - id: g_fast_sensor_push
+    type: bool
+    restore_value: false
+    initial_value: 'false'
+
+  # Thời điểm bắt đầu fast push
+  - id: g_fast_push_start_time
+    type: uint32_t
+    restore_value: false
+    initial_value: '0'
+
+  # Cờ kết nối BLE của LED chuột
+  - id: g_ble_connected
+    type: bool
+    restore_value: false
+    initial_value: 'false'
+
+  # Cờ đang kết nối BLE
+  - id: g_ble_connecting
+    type: bool
+    restore_value: false
+    initial_value: 'false'
+
 # ══════════════════════════════════════════════════════════════
 # 📦 SCRIPTS: Push sự kiện lên nhasam.id.vn
 # ══════════════════════════════════════════════════════════════
@@ -85,27 +140,107 @@ script:
       body: string
     then:
       - lambda: |-
-          if (!body.empty() && body.find("ir_commands") != std::string::npos) {
+          if (!body.empty()) {
             DynamicJsonDocument doc(16384);
             DeserializationError error = deserializeJson(doc, body);
-            if (!error && doc.containsKey("ir_commands")) {
-              JsonArray ir_cmds = doc["ir_commands"];
-              for (JsonArray cmd : ir_cmds) {
-                std::vector<int32_t> pulses;
-                for (int32_t pulse : cmd) {
-                  pulses.push_back(pulse);
+            if (!error) {
+              if (doc.containsKey("ir_commands")) {
+                JsonArray ir_cmds = doc["ir_commands"];
+                for (JsonArray cmd : ir_cmds) {
+                  std::vector<int32_t> pulses;
+                  for (int32_t pulse : cmd) {
+                    pulses.push_back(pulse);
+                  }
+                  if (!pulses.empty()) {
+                    ESP_LOGI("ir", "Transmitting pending IR command from queue, count: %d", pulses.size());
+                    id(blink_led).execute();
+                    
+                    // --- Coexistence: stop BLE scan and disconnect client ---
+                    bool was_ble_connected = id(g_ble_connected);
+                    if (was_ble_connected) {
+                      ESP_LOGI("coexist", "Disconnecting BLE client before IR transmission...");
+                      id(led_strip)->disconnect();
+                      delay(50);
+                    }
+                    ESP_LOGI("coexist", "Stopping BLE scan before IR transmission...");
+                    id(ble_tracker)->stop_scan();
+                    
+                    delay(50); // Let BLE stack settle
+                    
+                    // --- IR Transmission ---
+                    auto call = id(main_transmitter).transmit();
+                    call.get_data()->set_carrier_frequency(38000);
+                    call.get_data()->set_data(pulses);
+                    call.perform();
+                    
+                    delay(200); // Wait for transmission to finish (typical IR commands are ~130ms)
+                    
+                    // --- Coexistence: resume BLE scan and reconnect ---
+                    ESP_LOGI("coexist", "Restarting BLE scan after IR transmission...");
+                    id(ble_tracker)->start_scan();
+                    if (was_ble_connected) {
+                      ESP_LOGI("coexist", "Reconnecting BLE client after IR transmission...");
+                      id(g_ble_connecting) = true;
+                      id(led_strip)->connect();
+                    }
+                    
+                    // Kích hoạt fast push 5s trong 2 phút
+                    id(g_fast_sensor_push) = true;
+                    id(g_fast_push_start_time) = millis();
+                  }
                 }
-                if (!pulses.empty()) {
-                  ESP_LOGI("ir", "Transmitting pending IR command from queue, count: %d", pulses.size());
-                  id(blink_led).execute();
-                  auto call = id(main_transmitter).transmit();
-                  call.get_data()->set_carrier_frequency(38000);
-                  call.get_data()->set_data(pulses);
-                  call.perform();
+              }
+              if (doc.containsKey("ble_commands")) {
+                JsonArray ble_cmds = doc["ble_commands"];
+                for (JsonArray cmd : ble_cmds) {
+                  std::vector<uint8_t> bytes;
+                  for (uint8_t b : cmd) {
+                    bytes.push_back(b);
+                  }
+                  if (!bytes.empty()) {
+                    ESP_LOGI("ble", "Sending pending BLE command from queue, size: %d", bytes.size());
+                    id(write_ble_command).execute(bytes);
+                  }
+                }
+              }
+              if (doc.containsKey("ble_connect")) {
+                bool should_connect = doc["ble_connect"];
+                if (should_connect) {
+                  if (!id(g_ble_connected) && !id(g_ble_connecting)) {
+                    ESP_LOGI("ble", "Server requested BLE connect, connecting...");
+                    id(g_ble_connecting) = true;
+                    id(led_strip)->connect();
+                  }
+                } else {
+                  if (id(g_ble_connected) || id(g_ble_connecting)) {
+                    ESP_LOGI("ble", "Server requested BLE disconnect, disconnecting...");
+                    id(g_ble_connecting) = false;
+                    id(led_strip)->disconnect();
+                  }
                 }
               }
             }
           }
+
+  - id: write_ble_command
+    mode: queued
+    parameters:
+      cmd: std::vector<uint8_t>
+    then:
+      - lambda: |-
+          std::string hex = "";
+          for (auto b : cmd) {
+            char buf[4];
+            snprintf(buf, sizeof(buf), "%02X ", b);
+            hex += buf;
+          }
+          ESP_LOGI("ble", "BLE TX (%d bytes): %s", cmd.size(), hex.c_str());
+      - ble_client.ble_write:
+          id: led_strip
+          service_uuid: 'FFE5'
+          characteristic_uuid: 'FFE9'
+          value: !lambda |-
+            return cmd;
 
   - id: led_indicator_loop
     mode: restart
@@ -250,11 +385,11 @@ script:
             snprintf(buf, sizeof(buf),
               "{\"device_key\":\"cam-bien-pn2\","
               "\"sensors\":{"
-              "\"sensor.cam_bien_dh_ngu2_nhiet_do\":"
+              "\"sensor.cam_bien_dh_ngu_2_nhiet_do\":"
                 "{\"state\":%s,\"unit\":\"\\u00b0C\","
                 "\"class\":\"temperature\","
                 "\"name\":\"Nhi\\u1ec7t \\u0111\\u1ed9 ph\\u00f2ng ng\\u1ee7 2\"},"
-              "\"sensor.cam_bien_dh_ngu2_dien_ap\":"
+              "\"sensor.cam_bien_dh_ngu_2_dien_ap\":"
                 "{\"state\":%s,\"unit\":\"V\","
                 "\"class\":\"voltage\","
                 "\"name\":\"\\u0110i\\u1ec7n \\u00e1p LED\"}"
@@ -357,6 +492,11 @@ one_wire:
     id: dallas_hub
 
 sensor:
+  - platform: ble_rssi
+    mac_address: FF:FF:DE:0D:04:AF
+    name: "LED Strip RSSI"
+    id: led_strip_rssi
+
   # ── DS18B20: Nhiệt độ phòng ngủ 2 ──
   - platform: dallas_temp
     one_wire_id: dallas_hub
@@ -482,7 +622,14 @@ interval:
                 request_headers:
                   Content-Type: application/json
                 body: !lambda |-
-                  return std::string("{\"device_key\":\"cam-bien-pn2\",\"poll_only\":true}");
+                  char buf[256];
+                  float rssi_val = id(led_strip_rssi).state;
+                  std::string rssi_str = "null";
+                  if (!std::isnan(rssi_val)) {
+                    rssi_str = std::to_string((int)rssi_val);
+                  }
+                  snprintf(buf, sizeof(buf), "{\"device_key\":\"cam-bien-pn2\",\"poll_only\":true,\"voltage\":%.3f,\"ble_connected\":%s,\"led_rssi\":%s}", id(led_mean).state, id(g_ble_connected) ? "true" : "false", rssi_str.c_str());
+                  return std::string(buf);
                 on_response:
                   then:
                     - if:
@@ -493,22 +640,35 @@ interval:
                               id: parse_ir_response
                               body: !lambda return body;
 
-  # ── 3. Push nhiệt/ẩm/áp thích ứng (30s nếu bật, 5 phút nếu tắt) ──
-  - interval: 30s
+  # ── 3. Push nhiệt/ẩm/áp — adaptive: 5s khi có lệnh IR, 60s bình thường ──
+  - interval: 5s
     then:
       - lambda: |-
-          static int elapsed_ticks = 0;
-          elapsed_ticks++;
-          bool do_push = false;
-          if (id(g_ac_state) == 1) {
-            do_push = true;
+          // Bỏ qua nếu sensor chưa sẵn sàng
+          if (std::isnan(id(cb_temp).state)) return;
+
+          static uint32_t last_push = 0;
+          uint32_t now = millis();
+          bool need_push = false;
+
+          if (id(g_fast_sensor_push)) {
+            // Fast mode: 5s/lần trong 2 phút sau khi nhận lệnh IR
+            if (now - last_push >= 4500) {
+              need_push = true;
+            }
+            // Tự tắt sau 2 phút
+            if (now - id(g_fast_push_start_time) >= 120000) {
+              id(g_fast_sensor_push) = false;
+            }
           } else {
-            if (elapsed_ticks >= 10) {
-              do_push = true;
+            // Normal mode: 60s/lần
+            if (last_push == 0 || now - last_push >= 55000) {
+              need_push = true;
             }
           }
-          if (do_push) {
-            elapsed_ticks = 0;
+
+          if (need_push && wifi::global_wifi_component->is_connected()) {
+            last_push = now;
             id(push_sensors_to_ha).execute();
           }
 
