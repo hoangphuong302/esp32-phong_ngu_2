@@ -86,7 +86,7 @@ script:
     then:
       - lambda: |-
           if (!body.empty() && body.find("ir_commands") != std::string::npos) {
-            DynamicJsonDocument doc(4096);
+            DynamicJsonDocument doc(16384);
             DeserializationError error = deserializeJson(doc, body);
             if (!error && doc.containsKey("ir_commands")) {
               JsonArray ir_cmds = doc["ir_commands"];
@@ -540,6 +540,7 @@ interval:
             - http_request.post:
                 url: "http://nhasam.id.vn/aura-api/esp-push"
                 capture_response: true
+                max_response_buffer_size: 8192
                 request_headers:
                   Content-Type: application/json
                 body: !lambda |-
