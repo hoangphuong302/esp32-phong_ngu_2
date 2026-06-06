@@ -689,9 +689,12 @@ interval:
             lambda: |-
               static uint32_t last_poll = 0;
               uint32_t now = millis();
-              // Fast poll (500ms) when BLE session is active or recently active (12s window)
+              // CRITICAL: Do NOT poll while BLE is connecting!
+              // ESP32-C3 shares one radio — WiFi traffic blocks BLE connection.
+              if (id(g_ble_connecting) && !id(g_ble_connected)) return false;
+              // Fast poll (500ms) when BLE is connected — pick up next commands quickly
               // Normal poll (1500ms) otherwise to save bandwidth
-              bool ble_active = id(g_ble_connected) || id(g_ble_connecting) ||
+              bool ble_active = id(g_ble_connected) ||
                                 (id(g_last_ble_activity) > 0 && now - id(g_last_ble_activity) < 12000);
               uint32_t min_interval = ble_active ? 400 : 1400;
               if (now - last_poll < min_interval) return false;
