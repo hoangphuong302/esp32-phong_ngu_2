@@ -681,12 +681,23 @@ interval:
             id(push_ac_off).execute();  // 🔽 ON → OFF
           }
 
-  # ── 2. Poll lệnh IR pending mỗi 5 giây — phản hồi nhanh ──
-  - interval: 1500ms
+  # ── 2. Poll lệnh IR/BLE pending — adaptive: 500ms khi BLE active, 1500ms bình thường ──
+  - interval: 500ms
     then:
       - if:
           condition:
-            lambda: return wifi::global_wifi_component->is_connected();
+            lambda: |-
+              static uint32_t last_poll = 0;
+              uint32_t now = millis();
+              // Fast poll (500ms) when BLE session is active or recently active (12s window)
+              // Normal poll (1500ms) otherwise to save bandwidth
+              bool ble_active = id(g_ble_connected) || id(g_ble_connecting) ||
+                                (id(g_last_ble_activity) > 0 && now - id(g_last_ble_activity) < 12000);
+              uint32_t min_interval = ble_active ? 400 : 1400;
+              if (now - last_poll < min_interval) return false;
+              if (!wifi::global_wifi_component->is_connected()) return false;
+              last_poll = now;
+              return true;
           then:
             - http_request.post:
                 url: "http://nhasam.id.vn/aura-api/esp-push"
@@ -751,9 +762,11 @@ interval:
           uint32_t now = millis();
           bool need_session_end = false;
           
-          // 1. Session timeout: disconnect BLE after 2 seconds of inactivity
-          if (id(g_ble_connected) && (now - id(g_last_ble_activity) > 2000)) {
-            ESP_LOGI("coexist", "BLE session inactive for 2s. Disconnecting BLE...");
+          // 1. Session timeout: disconnect BLE after 10 seconds of inactivity
+          //    Longer timeout keeps BLE connected during rapid interactions
+          //    (e.g. dragging color/brightness sliders) to avoid reconnect overhead
+          if (id(g_ble_connected) && (now - id(g_last_ble_activity) > 10000)) {
+            ESP_LOGI("coexist", "BLE session inactive for 10s. Disconnecting BLE...");
             id(led_strip)->disconnect();
             id(g_ble_connected) = false;
             id(g_ble_connecting) = false;
