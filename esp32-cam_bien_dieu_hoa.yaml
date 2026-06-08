@@ -213,6 +213,10 @@ script:
             }
           }
 
+  - id: restore_wifi
+    then:
+      - wifi.enable:
+
   - id: write_ble_command
     mode: queued
     parameters:
@@ -220,7 +224,7 @@ script:
     then:
       - lambda: |-
           if (!id(g_ble_connected) && !id(g_ble_connecting)) {
-            ESP_LOGI("coexist", "Starting BLE session. Stopping BLE scanner...");
+            ESP_LOGI("coexist", "Starting BLE session. Disabling WiFi...");
             id(g_ble_connecting) = true;
             id(g_last_ble_activity) = millis();
             id(ble_tracker)->stop_scan();
@@ -230,7 +234,8 @@ script:
             lambda: |-
               return !id(g_ble_connected);
           then:
-            - delay: 100ms
+            - wifi.disable:
+            - delay: 200ms
             - lambda: |-
                 ESP_LOGI("coexist", "Connecting to BLE mouse LED...");
                 id(led_strip)->connect();
@@ -681,26 +686,17 @@ interval:
             id(push_ac_off).execute();  // 🔽 ON → OFF
           }
 
-  # ── 2. Poll lệnh IR/BLE pending — adaptive: 500ms khi BLE active, 1500ms bình thường ──
-  - interval: 500ms
+  # ── 2. Poll lệnh IR/BLE pending mỗi 1.5 giây ──
+  # Skip poll khi BLE đang active để nhường radio cho BLE (ESP32-C3 shared radio)
+  - interval: 1500ms
     then:
       - if:
           condition:
             lambda: |-
-              static uint32_t last_poll = 0;
-              uint32_t now = millis();
-              // CRITICAL: Do NOT poll while BLE is connecting!
-              // ESP32-C3 shares one radio — WiFi traffic blocks BLE connection.
-              if (id(g_ble_connecting) && !id(g_ble_connected)) return false;
-              // Fast poll (500ms) when BLE is connected — pick up next commands quickly
-              // Normal poll (1500ms) otherwise to save bandwidth
-              bool ble_active = id(g_ble_connected) ||
-                                (id(g_last_ble_activity) > 0 && now - id(g_last_ble_activity) < 12000);
-              uint32_t min_interval = ble_active ? 400 : 1400;
-              if (now - last_poll < min_interval) return false;
-              if (!wifi::global_wifi_component->is_connected()) return false;
-              last_poll = now;
-              return true;
+              // Skip poll khi BLE đang connecting hoặc connected
+              // ESP32-C3 shared radio: WiFi traffic blocks BLE operations
+              if (id(g_ble_connecting) || id(g_ble_connected)) return false;
+              return wifi::global_wifi_component->is_connected();
           then:
             - http_request.post:
                 url: "http://nhasam.id.vn/aura-api/esp-push"
@@ -763,29 +759,28 @@ interval:
     then:
       - lambda: |-
           uint32_t now = millis();
-          bool need_session_end = false;
+          bool need_wifi_restore = false;
           
-          // 1. Session timeout: disconnect BLE after 10 seconds of inactivity
-          //    Longer timeout keeps BLE connected during rapid interactions
-          //    (e.g. dragging color/brightness sliders) to avoid reconnect overhead
-          if (id(g_ble_connected) && (now - id(g_last_ble_activity) > 10000)) {
-            ESP_LOGI("coexist", "BLE session inactive for 10s. Disconnecting BLE...");
+          // 1. Session timeout: disconnect BLE and restore WiFi after 2s of inactivity
+          if (id(g_ble_connected) && (now - id(g_last_ble_activity) > 2000)) {
+            ESP_LOGI("coexist", "BLE session inactive for 2s. Disconnecting BLE...");
             id(led_strip)->disconnect();
             id(g_ble_connected) = false;
             id(g_ble_connecting) = false;
-            need_session_end = true;
+            need_wifi_restore = true;
           }
           
-          // 2. Connection timeout: if stuck connecting for > 8s, reset
-          if (id(g_ble_connecting) && !id(g_ble_connected) && (now - id(g_last_ble_activity) > 8000)) {
+          // 2. Connection timeout: if stuck connecting for > 4s, reset and restore WiFi
+          if (id(g_ble_connecting) && !id(g_ble_connected) && (now - id(g_last_ble_activity) > 4000)) {
             ESP_LOGE("coexist", "BLE connection timeout. Disconnecting BLE...");
             id(led_strip)->disconnect();
             id(g_ble_connecting) = false;
-            need_session_end = true;
+            need_wifi_restore = true;
           }
           
-          if (need_session_end) {
-            ESP_LOGI("coexist", "BLE session ended. Restarting BLE tracker...");
+          if (need_wifi_restore) {
+            ESP_LOGI("coexist", "Restoring WiFi and resuming BLE scanner...");
+            id(restore_wifi).execute();
             id(ble_tracker)->start_scan();
           }
 
