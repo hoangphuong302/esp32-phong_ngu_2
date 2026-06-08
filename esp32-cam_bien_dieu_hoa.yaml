@@ -761,9 +761,9 @@ interval:
           uint32_t now = millis();
           bool need_wifi_restore = false;
           
-          // 1. Session timeout: disconnect BLE and restore WiFi after 2s of inactivity
-          if (id(g_ble_connected) && (now - id(g_last_ble_activity) > 2000)) {
-            ESP_LOGI("coexist", "BLE session inactive for 2s. Disconnecting BLE...");
+          // 1. Session timeout: disconnect BLE and restore WiFi after 10s of inactivity
+          if (id(g_ble_connected) && (now - id(g_last_ble_activity) > 10000)) {
+            ESP_LOGI("coexist", "BLE session inactive for 10s. Disconnecting BLE...");
             id(led_strip)->disconnect();
             id(g_ble_connected) = false;
             id(g_ble_connecting) = false;
