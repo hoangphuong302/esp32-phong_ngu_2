@@ -39,7 +39,7 @@ ble_client:
             id(g_ble_connected) = false;
             id(g_ble_connecting) = false;
             ESP_LOGW("ble", "BLE LED strip DISCONNECTED!");
-            id(ble_tracker)->start_scan();
+            id(ble_tracker)->stop_scan();
 
 # 🔇 Logger set to DEBUG with filters to prevent verbosity
 logger:
@@ -162,28 +162,21 @@ script:
                     ESP_LOGI("ir", "Transmitting pending IR command from queue, count: %d", pulses.size());
                     id(blink_led).execute();
                     
-                    // --- Coexistence: stop BLE scan and disconnect client ---
+                    // --- Coexistence: stop BLE scan before IR ---
                     bool was_ble_connected = id(g_ble_connected);
                     if (was_ble_connected) {
                       ESP_LOGI("coexist", "Disconnecting BLE client before IR transmission...");
                       id(led_strip)->disconnect();
-                      delay(50);
                     }
-                    ESP_LOGI("coexist", "Stopping BLE scan before IR transmission...");
                     id(ble_tracker)->stop_scan();
                     
-                    delay(50); // Let BLE stack settle
-                    
-                    // --- IR Transmission ---
+                    // --- IR Transmission (non-blocking) ---
                     auto call = id(main_transmitter).transmit();
                     call.get_data()->set_carrier_frequency(38000);
                     call.get_data()->set_data(pulses);
                     call.perform();
                     
-                    delay(200); // Wait for transmission to finish (typical IR commands are ~130ms)
-                    
-                    // --- Coexistence: resume BLE scan and reconnect ---
-                    ESP_LOGI("coexist", "Restarting BLE scan after IR transmission...");
+                    // --- Resume BLE scan after IR ---
                     id(ble_tracker)->start_scan();
                     if (was_ble_connected) {
                       ESP_LOGI("coexist", "Reconnecting BLE client after IR transmission...");
@@ -693,9 +686,6 @@ interval:
       - if:
           condition:
             lambda: |-
-              // Skip poll khi BLE đang connecting hoặc connected
-              // ESP32-C3 shared radio: WiFi traffic blocks BLE operations
-              if (id(g_ble_connecting) || id(g_ble_connected)) return false;
               return wifi::global_wifi_component->is_connected();
           then:
             - http_request.post:
