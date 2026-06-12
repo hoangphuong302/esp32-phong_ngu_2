@@ -10,6 +10,8 @@ esphome:
     priority: -10
     then:
       - script.execute: led_indicator_loop
+      - lambda: |-
+          id(ble_tracker)->stop_scan();
 
 esp32:
   board: esp32-c3-devkitm-1
@@ -33,14 +35,15 @@ ble_client:
         - lambda: |-
             id(g_ble_connected) = true;
             id(g_ble_connecting) = false;
+            id(ble_tracker)->stop_scan();
             ESP_LOGI("ble", "BLE LED strip CONNECTED!");
     on_disconnect:
       then:
         - lambda: |-
             id(g_ble_connected) = false;
             id(g_ble_connecting) = false;
+            id(ble_tracker)->stop_scan();
             ESP_LOGW("ble", "BLE LED strip DISCONNECTED!");
-            id(ble_tracker)->start_scan();
 
 # 🔇 Logger set to DEBUG with filters to prevent verbosity
 logger:
@@ -208,7 +211,7 @@ script:
             ESP_LOGI("coexist", "Starting BLE session — pausing WiFi radio (power save MAX)...");
             id(g_ble_connecting) = true;
             id(g_last_ble_activity) = millis();
-            id(ble_tracker)->stop_scan();
+            id(ble_tracker)->start_scan();
             // Pause WiFi radio — stay associated but sleep between beacons
             wifi::global_wifi_component->set_power_save_mode(wifi::WIFI_POWER_SAVE_HIGH);
           } else {
@@ -220,16 +223,16 @@ script:
             lambda: |-
               return !id(g_ble_connected);
           then:
-            - delay: 200ms
+            - delay: 7s
             - lambda: |-
                 ESP_LOGI("coexist", "Connecting to BLE mouse LED...");
-                id(led_strip)->set_remote_addr_type(BLE_ADDR_TYPE_RANDOM);
+                id(led_strip)->set_remote_addr_type(BLE_ADDR_TYPE_PUBLIC);
                 id(led_strip)->connect();
             - wait_until:
                 condition:
                   lambda: |-
                     return id(g_ble_connected) || !id(g_ble_connecting);
-                timeout: 6s
+                timeout: 20s
       - if:
           condition:
             lambda: |-
@@ -753,16 +756,16 @@ interval:
             id(g_ble_connected) = false;
             id(g_ble_connecting) = false;
             wifi::global_wifi_component->set_power_save_mode(wifi::WIFI_POWER_SAVE_NONE); // Resume full WiFi
-            id(ble_tracker)->start_scan();
+            id(ble_tracker)->stop_scan();
           }
           
-          // 2. Connection timeout: stuck connecting > 6s, reset and resume WiFi
-          if (id(g_ble_connecting) && !id(g_ble_connected) && (now - id(g_last_ble_activity) > 6000)) {
+          // 2. Connection timeout: stuck connecting > 20s, reset and resume WiFi
+          if (id(g_ble_connecting) && !id(g_ble_connected) && (now - id(g_last_ble_activity) > 20000)) {
             ESP_LOGE("coexist", "BLE connection timeout. Resuming WiFi full speed...");
             id(led_strip)->disconnect();
             id(g_ble_connecting) = false;
             wifi::global_wifi_component->set_power_save_mode(wifi::WIFI_POWER_SAVE_NONE); // Resume full WiFi
-            id(ble_tracker)->start_scan();
+            id(ble_tracker)->stop_scan();
           }
 
 remote_transmitter:
