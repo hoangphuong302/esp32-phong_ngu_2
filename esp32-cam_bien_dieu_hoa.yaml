@@ -21,10 +21,10 @@ esp32:
 esp32_ble_tracker:
   id: ble_tracker
   scan_parameters:
-    interval: 4000ms
-    window: 200ms
+    interval: 200ms
+    window: 100ms
     continuous: true
-    active: false
+    active: true
 
 ble_client:
   - mac_address: FF:FF:DE:0D:04:AF
@@ -42,6 +42,7 @@ ble_client:
         - lambda: |-
             id(g_ble_connected) = false;
             id(g_ble_connecting) = false;
+            wifi::global_wifi_component->set_power_save_mode(wifi::WIFI_POWER_SAVE_NONE); // Restore full WiFi
             id(ble_tracker)->stop_scan();
             ESP_LOGW("ble", "BLE LED strip DISCONNECTED!");
 
@@ -226,7 +227,8 @@ script:
             - delay: 7s
             - lambda: |-
                 ESP_LOGI("coexist", "Connecting to BLE mouse LED...");
-                id(led_strip)->set_remote_addr_type(BLE_ADDR_TYPE_PUBLIC);
+                id(ble_tracker)->stop_scan(); // Stop scanning before connecting to avoid radio resource conflicts
+                id(led_strip)->set_remote_addr_type(BLE_ADDR_TYPE_RANDOM);
                 id(led_strip)->connect();
             - wait_until:
                 condition:
@@ -717,6 +719,9 @@ interval:
       - lambda: |-
           // Bỏ qua nếu sensor chưa sẵn sàng
           if (std::isnan(id(cb_temp).state)) return;
+
+          // Bỏ qua nếu đang xử lý hoặc đang kết nối BLE để tránh nhiễu WiFi/BLE
+          if (id(g_ble_connected) || id(g_ble_connecting)) return;
 
           static uint32_t last_push = 0;
           uint32_t now = millis();
