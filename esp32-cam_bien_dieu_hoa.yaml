@@ -12,6 +12,14 @@ esphome:
       - script.execute: led_indicator_loop
       - lambda: |-
           id(ble_tracker)->stop_scan();
+      - delay: 10s
+      - lambda: |-
+          ESP_LOGI("xiaomi", "Starting initial BLE scan for Xiaomi sensor (30s)...");
+          id(ble_tracker)->start_scan();
+      - delay: 30s
+      - lambda: |-
+          ESP_LOGI("xiaomi", "Stopping initial BLE scan...");
+          id(ble_tracker)->stop_scan();
 
 esp32:
   board: esp32-c3-devkitm-1
@@ -42,7 +50,7 @@ ble_client:
         - lambda: |-
             id(g_ble_connected) = false;
             id(g_ble_connecting) = false;
-            wifi::global_wifi_component->set_power_save_mode(wifi::WIFI_POWER_SAVE_NONE); // Restore full WiFi
+            // wifi::global_wifi_component->set_power_save_mode(wifi::WIFI_POWER_SAVE_NONE); // Restore full WiFi
             id(ble_tracker)->stop_scan();
             ESP_LOGW("ble", "BLE LED strip DISCONNECTED!");
 
@@ -68,7 +76,19 @@ api:
       then:
         - script.execute: blink_led
         - remote_transmitter.transmit_raw:
-                      code: !lambda "return command;"
+            carrier_frequency: 38kHz
+            code: !lambda "return command;"
+    - service: send_ble_command
+      variables:
+        command: int[]
+      then:
+        - script.execute: blink_led
+        - lambda: |-
+            std::vector<uint8_t> bytes;
+            for (int val : command) {
+              bytes.push_back((uint8_t)val);
+            }
+            id(write_ble_command).execute(bytes);
 
 # ✅ HTTP client — ESP32 chủ động PUSH lên nhasam.id.vn
 http_request:
@@ -212,9 +232,9 @@ script:
             ESP_LOGI("coexist", "Starting BLE session — pausing WiFi radio (power save MAX)...");
             id(g_ble_connecting) = true;
             id(g_last_ble_activity) = millis();
-            id(ble_tracker)->start_scan();
+            id(ble_tracker)->stop_scan();
             // Pause WiFi radio — stay associated but sleep between beacons
-            wifi::global_wifi_component->set_power_save_mode(wifi::WIFI_POWER_SAVE_HIGH);
+            // wifi::global_wifi_component->set_power_save_mode(wifi::WIFI_POWER_SAVE_HIGH);
           } else {
             // Already in BLE session, just update activity timer
             id(g_last_ble_activity) = millis();
@@ -224,17 +244,16 @@ script:
             lambda: |-
               return !id(g_ble_connected);
           then:
-            - delay: 7s
             - lambda: |-
-                ESP_LOGI("coexist", "Connecting to BLE mouse LED...");
-                id(ble_tracker)->stop_scan(); // Stop scanning before connecting to avoid radio resource conflicts
+                ESP_LOGI("coexist", "Connecting directly to BLE mouse LED...");
+                id(ble_tracker)->stop_scan();
                 id(led_strip)->set_remote_addr_type(BLE_ADDR_TYPE_RANDOM);
                 id(led_strip)->connect();
             - wait_until:
                 condition:
                   lambda: |-
                     return id(g_ble_connected) || !id(g_ble_connecting);
-                timeout: 20s
+                timeout: 10s
       - if:
           condition:
             lambda: |-
@@ -517,7 +536,7 @@ wifi:
   output_power: 20dB
 
   # Kết nối nhanh, không scan lại từ đầu khi đổi IP hoặc mất điện cắm lại
-  fast_connect: true
+  fast_connect: false
 
 
 
@@ -760,7 +779,7 @@ interval:
             id(led_strip)->disconnect();
             id(g_ble_connected) = false;
             id(g_ble_connecting) = false;
-            wifi::global_wifi_component->set_power_save_mode(wifi::WIFI_POWER_SAVE_NONE); // Resume full WiFi
+            // wifi::global_wifi_component->set_power_save_mode(wifi::WIFI_POWER_SAVE_NONE); // Resume full WiFi
             id(ble_tracker)->stop_scan();
           }
           
@@ -769,7 +788,22 @@ interval:
             ESP_LOGE("coexist", "BLE connection timeout. Resuming WiFi full speed...");
             id(led_strip)->disconnect();
             id(g_ble_connecting) = false;
-            wifi::global_wifi_component->set_power_save_mode(wifi::WIFI_POWER_SAVE_NONE); // Resume full WiFi
+            // wifi::global_wifi_component->set_power_save_mode(wifi::WIFI_POWER_SAVE_NONE); // Resume full WiFi
+            id(ble_tracker)->stop_scan();
+          }
+
+  # ── 4. Periodic BLE Scan for Xiaomi Sensor (30s every 5 minutes) ──
+  - interval: 5min
+    then:
+      - lambda: |-
+          if (!id(g_ble_connected) && !id(g_ble_connecting)) {
+            ESP_LOGI("xiaomi", "Starting periodic BLE scan for Xiaomi sensor (30s)...");
+            id(ble_tracker)->start_scan();
+          }
+      - delay: 30s
+      - lambda: |-
+          if (!id(g_ble_connected) && !id(g_ble_connecting)) {
+            ESP_LOGI("xiaomi", "Stopping periodic BLE scan...");
             id(ble_tracker)->stop_scan();
           }
 
