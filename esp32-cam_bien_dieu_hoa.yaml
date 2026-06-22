@@ -12,14 +12,6 @@ esphome:
       - script.execute: led_indicator_loop
       - lambda: |-
           id(ble_tracker)->stop_scan();
-      - delay: 10s
-      - lambda: |-
-          ESP_LOGI("xiaomi", "Starting initial BLE scan for Xiaomi sensor (30s)...");
-          id(ble_tracker)->start_scan();
-      - delay: 30s
-      - lambda: |-
-          ESP_LOGI("xiaomi", "Stopping initial BLE scan...");
-          id(ble_tracker)->stop_scan();
 
 esp32:
   board: esp32-c3-devkitm-1
@@ -59,7 +51,7 @@ logger:
   level: DEBUG
   baud_rate: 0
   logs:
-    esp32_ble_tracker: DEBUG
+    esp32_ble_tracker: WARN
     sensor: INFO
     adc: INFO
     i2c: INFO
@@ -93,7 +85,7 @@ api:
 # ✅ HTTP client — ESP32 chủ động PUSH lên nhasam.id.vn
 http_request:
   useragent: "esphome/cam-bien-pn2"
-  timeout: 10s
+  timeout: 3s
   verify_ssl: false
 
 # ══════════════════════════════════════════════════════════════
@@ -253,7 +245,7 @@ script:
                 condition:
                   lambda: |-
                     return id(g_ble_connected) || !id(g_ble_connecting);
-                timeout: 10s
+                timeout: 3s
       - if:
           condition:
             lambda: |-
@@ -536,7 +528,7 @@ wifi:
   output_power: 20dB
 
   # Kết nối nhanh, không scan lại từ đầu khi đổi IP hoặc mất điện cắm lại
-  fast_connect: false
+  fast_connect: true
 
 
 
@@ -792,23 +784,10 @@ interval:
             id(ble_tracker)->stop_scan();
           }
 
-  # ── 4. Periodic BLE Scan for Xiaomi Sensor (30s every 5 minutes) ──
-  - interval: 5min
-    then:
-      - lambda: |-
-          if (!id(g_ble_connected) && !id(g_ble_connecting)) {
-            ESP_LOGI("xiaomi", "Starting periodic BLE scan for Xiaomi sensor (30s)...");
-            id(ble_tracker)->start_scan();
-          }
-      - delay: 30s
-      - lambda: |-
-          if (!id(g_ble_connected) && !id(g_ble_connecting)) {
-            ESP_LOGI("xiaomi", "Stopping periodic BLE scan...");
-            id(ble_tracker)->stop_scan();
-          }
-
 remote_transmitter:
   id: main_transmitter
   pin: GPIO4
   carrier_duty_percent: 50%
   non_blocking: true
+
+
