@@ -270,7 +270,16 @@ script:
                   return cmd;
             - lambda: |-
                 ESP_LOGI("ble", "BLE command written to FFE9 (%u bytes)", cmd.size());
-            - delay: 100ms
+            - delay: 200ms
+            - lambda: |-
+                if (cmd.size() == 3 && cmd[0] == 0xCC && cmd[1] == 0x24 && cmd[2] == 0x33) {
+                  ESP_LOGI("coexist", "Power OFF command written. Disconnecting BLE session immediately...");
+                  id(led_strip)->set_auto_connect(false);
+                  id(led_strip)->disconnect();
+                  id(g_ble_connected) = false;
+                  id(g_ble_connecting) = false;
+                  id(ble_tracker)->stop_scan();
+                }
 
   - id: led_indicator_loop
     mode: restart
