@@ -11,7 +11,7 @@ esphome:
     then:
       - script.execute: led_indicator_loop
       - lambda: |-
-          id(ble_tracker)->stop_scan();
+          id(ble_tracker)->start_scan();
 
 esp32:
   board: esp32-c3-devkitm-1
@@ -21,8 +21,8 @@ esp32:
 esp32_ble_tracker:
   id: ble_tracker
   scan_parameters:
-    interval: 200ms
-    window: 100ms
+    interval: 320ms
+    window: 30ms
     continuous: true
     active: true
 
@@ -35,6 +35,7 @@ ble_client:
         - lambda: |-
             id(g_ble_connected) = true;
             id(g_ble_connecting) = false;
+            id(led_strip)->set_auto_connect(false);
             id(ble_tracker)->stop_scan();
             ESP_LOGI("ble", "BLE LED strip CONNECTED!");
     on_disconnect:
@@ -42,6 +43,7 @@ ble_client:
         - lambda: |-
             id(g_ble_connected) = false;
             id(g_ble_connecting) = false;
+            id(led_strip)->set_auto_connect(false);
             // wifi::global_wifi_component->set_power_save_mode(wifi::WIFI_POWER_SAVE_NONE); // Restore full WiFi
             id(ble_tracker)->stop_scan();
             ESP_LOGW("ble", "BLE LED strip DISCONNECTED!");
@@ -224,7 +226,9 @@ script:
             ESP_LOGI("coexist", "Starting BLE session — pausing WiFi radio (power save MAX)...");
             id(g_ble_connecting) = true;
             id(g_last_ble_activity) = millis();
-            id(ble_tracker)->stop_scan();
+            // Let ESPHome learn the advertised address type before opening GATT.
+            id(led_strip)->set_auto_connect(true);
+            id(ble_tracker)->start_scan();
             // Pause WiFi radio — stay associated but sleep between beacons
             // wifi::global_wifi_component->set_power_save_mode(wifi::WIFI_POWER_SAVE_HIGH);
           } else {
@@ -236,16 +240,21 @@ script:
             lambda: |-
               return !id(g_ble_connected);
           then:
-            - lambda: |-
-                ESP_LOGI("coexist", "Connecting directly to BLE mouse LED...");
-                id(ble_tracker)->stop_scan();
-                id(led_strip)->set_remote_addr_type(BLE_ADDR_TYPE_RANDOM);
-                id(led_strip)->connect();
             - wait_until:
                 condition:
                   lambda: |-
                     return id(g_ble_connected) || !id(g_ble_connecting);
-                timeout: 3s
+                timeout: 12s
+            - if:
+                condition:
+                  lambda: return !id(g_ble_connected);
+                then:
+                  - lambda: |-
+                      ESP_LOGE("coexist", "BLE mouse LED connection timed out; resetting session");
+                      id(led_strip)->set_auto_connect(false);
+                      id(led_strip)->disconnect();
+                      id(g_ble_connecting) = false;
+                      id(ble_tracker)->stop_scan();
       - if:
           condition:
             lambda: |-
@@ -259,6 +268,8 @@ script:
                 characteristic_uuid: 'FFE9'
                 value: !lambda |-
                   return cmd;
+            - lambda: |-
+                ESP_LOGI("ble", "BLE command written to FFE9 (%u bytes)", cmd.size());
             - delay: 100ms
 
   - id: led_indicator_loop
@@ -431,15 +442,15 @@ script:
               "\"sensor.miaomiaoce_t2_aaaf_temperature\":"
                 "{\"state\":%s,\"unit\":\"\\u00b0C\","
                 "\"class\":\"temperature\","
-                "\"name\":\"Nhi\\u1ec7t \\u0111\\u1ed9 Ban C\u00f4ng\"},"
+                "\"name\":\"Nhi\\u1ec7t \\u0111\\u1ed9 Sam\"},"
               "\"sensor.miaomiaoce_t2_aaaf_humidity\":"
                 "{\"state\":%s,\"unit\":\"%%\","
                 "\"class\":\"humidity\","
-                "\"name\":\"\\u0110\\u1ed9 \\u1ea9m Ban C\u00f4ng\"},"
+                "\"name\":\"\\u0110\\u1ed9 \\u1ea9m Sam\"},"
               "\"sensor.miaomiaoce_t2_aaaf_battery\":"
                 "{\"state\":%s,\"unit\":\"%%\","
                 "\"class\":\"battery\","
-                "\"name\":\"Pin C\\u1ea3m Bi\\u1ebfn Ban C\u00f4ng\"},"
+                "\"name\":\"Pin C\\u1ea3m Bi\\u1ebfn Sam\"},"
               "\"sensor.cam_bien_dh_ngu_2_nhiet_do_cpu\":"
                 "{\"state\":%s,\"unit\":\"\\u00b0C\","
                 "\"class\":\"temperature\","
@@ -768,6 +779,7 @@ interval:
           // 1. Session timeout: disconnect BLE after 10s inactivity, resume WiFi
           if (id(g_ble_connected) && (now - id(g_last_ble_activity) > 10000)) {
             ESP_LOGI("coexist", "BLE idle 10s. Disconnecting BLE, resuming WiFi full speed...");
+            id(led_strip)->set_auto_connect(false);
             id(led_strip)->disconnect();
             id(g_ble_connected) = false;
             id(g_ble_connecting) = false;
@@ -778,6 +790,7 @@ interval:
           // 2. Connection timeout: stuck connecting > 20s, reset and resume WiFi
           if (id(g_ble_connecting) && !id(g_ble_connected) && (now - id(g_last_ble_activity) > 20000)) {
             ESP_LOGE("coexist", "BLE connection timeout. Resuming WiFi full speed...");
+            id(led_strip)->set_auto_connect(false);
             id(led_strip)->disconnect();
             id(g_ble_connecting) = false;
             // wifi::global_wifi_component->set_power_save_mode(wifi::WIFI_POWER_SAVE_NONE); // Resume full WiFi
