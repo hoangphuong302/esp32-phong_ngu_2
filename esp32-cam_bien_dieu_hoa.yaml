@@ -21,8 +21,8 @@ esp32:
 esp32_ble_tracker:
   id: ble_tracker
   scan_parameters:
-    interval: 320ms
-    window: 30ms
+    interval: 100ms
+    window: 40ms
     continuous: true
     active: true
 
@@ -244,7 +244,7 @@ script:
                 condition:
                   lambda: |-
                     return id(g_ble_connected) || !id(g_ble_connecting);
-                timeout: 12s
+                timeout: 25s
             - if:
                 condition:
                   lambda: return !id(g_ble_connected);
@@ -278,7 +278,6 @@ script:
                   id(led_strip)->disconnect();
                   id(g_ble_connected) = false;
                   id(g_ble_connecting) = false;
-                  id(ble_tracker)->stop_scan();
                 }
 
   - id: led_indicator_loop
@@ -796,8 +795,8 @@ interval:
             id(ble_tracker)->stop_scan();
           }
           
-          // 2. Connection timeout: stuck connecting > 20s, reset and resume WiFi
-          if (id(g_ble_connecting) && !id(g_ble_connected) && (now - id(g_last_ble_activity) > 20000)) {
+          // 2. Connection timeout: stuck connecting > 30s, reset and resume WiFi
+          if (id(g_ble_connecting) && !id(g_ble_connected) && (now - id(g_last_ble_activity) > 30000)) {
             ESP_LOGE("coexist", "BLE connection timeout. Resuming WiFi full speed...");
             id(led_strip)->set_auto_connect(false);
             id(led_strip)->disconnect();
