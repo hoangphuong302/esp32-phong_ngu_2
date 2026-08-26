@@ -126,6 +126,10 @@ globals:
     type: bool
     restore_value: false
     initial_value: 'false'
+  # IR queue acknowledgement: prevents the server retransmitting a full Midea
+  # frame after this node has already emitted it.
+  - { id: g_ir_ack_json, type: std::string, restore_value: false, initial_value: '"[]"' }
+  - { id: g_last_ir_command_id, type: std::string, restore_value: false, initial_value: '""' }
 
   # Cờ đẩy sensor nhanh khi có lệnh IR từ web
   - id: g_fast_sensor_push
@@ -170,7 +174,26 @@ script:
             DynamicJsonDocument doc(16384);
             DeserializationError error = deserializeJson(doc, body);
             if (!error) {
-              if (doc.containsKey("ir_commands")) {
+              if (doc.containsKey("ir_command_items")) {
+                for (JsonObject item : doc["ir_command_items"].as<JsonArray>()) {
+                  std::string command_id = item["id"] | "";
+                  JsonArray cmd = item["code"];
+                  if (command_id.empty()) continue;
+                  if (command_id != id(g_last_ir_command_id)) {
+                    std::vector<int32_t> pulses;
+                    for (int32_t pulse : cmd) pulses.push_back(pulse);
+                    if (pulses.empty()) continue;
+                    auto call = id(main_transmitter).transmit();
+                    call.get_data()->set_carrier_frequency(38000);
+                    call.get_data()->set_data(pulses);
+                    call.perform();
+                    id(g_last_ir_command_id) = command_id;
+                    id(g_fast_sensor_push) = true;
+                    id(g_fast_push_start_time) = millis();
+                  }
+                  id(g_ir_ack_json) = "[\"" + command_id + "\"]";
+                }
+              } else if (doc.containsKey("ir_commands")) {
                 JsonArray ir_cmds = doc["ir_commands"];
                 for (JsonArray cmd : ir_cmds) {
                   std::vector<int32_t> pulses;
@@ -731,7 +754,7 @@ interval:
                   if (!std::isnan(rssi_val)) {
                     rssi_str = std::to_string((int)rssi_val);
                   }
-                  snprintf(buf, sizeof(buf), "{\"device_key\":\"cam-bien-pn2\",\"poll_only\":true,\"voltage\":%.3f,\"ble_connected\":%s,\"led_rssi\":%s}", id(led_mean).state, id(g_ble_connected) ? "true" : "false", rssi_str.c_str());
+                  snprintf(buf, sizeof(buf), "{\"device_key\":\"cam-bien-pn2\",\"poll_only\":true,\"voltage\":%.3f,\"ble_connected\":%s,\"led_rssi\":%s,\"supports_ir_ack\":true,\"acked_ir_ids\":%s}", id(led_mean).state, id(g_ble_connected) ? "true" : "false", rssi_str.c_str(), id(g_ir_ack_json).c_str());
                   return std::string(buf);
                 on_response:
                   then:
