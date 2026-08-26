@@ -4,6 +4,7 @@ substitutions:
 esphome:
   name: cam-bien-dh-ngu2
   friendly_name: "Cảm biến điều hòa phòng ngủ 2"
+  build_path: C:/Workspace/esphome-build/cam-bien-dh-ngu2
   platformio_options:
     board_build.f_cpu: 80000000L
   on_boot:
@@ -84,6 +85,12 @@ globals:
     restore_value: false
     initial_value: 'false'
 
+  - { id: g_ir_ack_json, type: std::string, restore_value: false, initial_value: '"[]"' }
+  - { id: g_last_ir_command_id, type: std::string, restore_value: false, initial_value: '""' }
+  - { id: g_lan_route_healthy, type: bool, restore_value: false, initial_value: 'true' }
+  - { id: g_lan_retry_after, type: uint32_t, restore_value: false, initial_value: '0' }
+  - { id: g_last_poll_used_lan, type: bool, restore_value: false, initial_value: 'true' }
+
   # Cờ đẩy sensor nhanh khi có lệnh IR từ web
   - id: g_fast_sensor_push
     type: bool
@@ -112,7 +119,28 @@ script:
             DynamicJsonDocument doc(16384);
             DeserializationError error = deserializeJson(doc, body);
             if (!error) {
-              if (doc.containsKey("ir_commands")) {
+              if (doc.containsKey("ir_command_items")) {
+                for (JsonObject item : doc["ir_command_items"].as<JsonArray>()) {
+                  std::string command_id = item["id"] | "";
+                  JsonArray cmd = item["code"];
+                  if (command_id.empty()) continue;
+                  if (command_id != id(g_last_ir_command_id)) {
+                    std::vector<int32_t> pulses;
+                    for (int32_t pulse : cmd) pulses.push_back(pulse);
+                    if (pulses.empty()) continue;
+                    ESP_LOGI("ir", "Transmitting queued IR id=%s, count=%u", command_id.c_str(), pulses.size());
+                    id(blink_led).execute();
+                    auto call = id(main_transmitter).transmit();
+                    call.get_data()->set_carrier_frequency(38000);
+                    call.get_data()->set_data(pulses);
+                    call.perform();
+                    id(g_last_ir_command_id) = command_id;
+                    id(g_fast_sensor_push) = true;
+                    id(g_fast_push_start_time) = millis();
+                  }
+                  id(g_ir_ack_json) = "[\"" + command_id + "\"]";
+                }
+              } else if (doc.containsKey("ir_commands")) {
                 JsonArray ir_cmds = doc["ir_commands"];
                 for (JsonArray cmd : ir_cmds) {
                   std::vector<int32_t> pulses;
@@ -278,21 +306,11 @@ script:
             Content-Type: application/json
           body: !lambda |-
             char t_room[32], volt[32], cpu_s[32], wifi_s[32];
-            char xiaomi_t[32], xiaomi_h[32], xiaomi_b[32];
             if (std::isnan(id(cb_temp).state)) strcpy(t_room, "null");
             else snprintf(t_room, sizeof(t_room), "%.2f", id(cb_temp).state);
 
             if (std::isnan(id(led_mean).state)) strcpy(volt, "null");
             else snprintf(volt, sizeof(volt), "%.3f", id(led_mean).state);
-
-            if (std::isnan(id(xiaomi_temp).state)) strcpy(xiaomi_t, "null");
-            else snprintf(xiaomi_t, sizeof(xiaomi_t), "%.2f", id(xiaomi_temp).state);
-
-            if (std::isnan(id(xiaomi_humi).state)) strcpy(xiaomi_h, "null");
-            else snprintf(xiaomi_h, sizeof(xiaomi_h), "%.1f", id(xiaomi_humi).state);
-
-            if (std::isnan(id(xiaomi_bat).state)) strcpy(xiaomi_b, "null");
-            else snprintf(xiaomi_b, sizeof(xiaomi_b), "%.1f", id(xiaomi_bat).state);
 
             if (std::isnan(id(cpu_temp).state)) strcpy(cpu_s, "null");
             else snprintf(cpu_s, sizeof(cpu_s), "%.1f", id(cpu_temp).state);
@@ -300,7 +318,7 @@ script:
             if (std::isnan(id(wifi_rssi).state)) strcpy(wifi_s, "null");
             else snprintf(wifi_s, sizeof(wifi_s), "%.0f", id(wifi_rssi).state);
 
-            char buf[1408];
+            char buf[768];
             snprintf(buf, sizeof(buf),
               "{\"device_key\":\"cam-bien-pn2\","
               "\"sensors\":{"
@@ -312,18 +330,6 @@ script:
                 "{\"state\":%s,\"unit\":\"V\","
                 "\"class\":\"voltage\","
                 "\"name\":\"\\u0110i\\u1ec7n \\u00e1p LED\"},"
-              "\"sensor.miaomiaoce_t2_aaaf_temperature\":"
-                "{\"state\":%s,\"unit\":\"\\u00b0C\","
-                "\"class\":\"temperature\","
-                "\"name\":\"Nhi\\u1ec7t \\u0111\\u1ed9 Sam\"},"
-              "\"sensor.miaomiaoce_t2_aaaf_humidity\":"
-                "{\"state\":%s,\"unit\":\"%%\","
-                "\"class\":\"humidity\","
-                "\"name\":\"\\u0110\\u1ed9 \\u1ea9m Sam\"},"
-              "\"sensor.miaomiaoce_t2_aaaf_battery\":"
-                "{\"state\":%s,\"unit\":\"%%\","
-                "\"class\":\"battery\","
-                "\"name\":\"Pin C\\u1ea3m Bi\\u1ebfn Sam\"},"
               "\"sensor.cam_bien_dh_ngu_2_nhiet_do_cpu\":"
                 "{\"state\":%s,\"unit\":\"\\u00b0C\","
                 "\"class\":\"temperature\","
@@ -335,9 +341,6 @@ script:
               "}}",
               t_room,
               volt,
-              xiaomi_t,
-              xiaomi_h,
-              xiaomi_b,
               cpu_s,
               wifi_s
             );
@@ -481,6 +484,7 @@ text_sensor:
       name: "IP Address"
     ssid:
       name: "Connected SSID"
+      id: connected_ssid
 
 # ══════════════════════════════════════════════════════════════
 # ⚙️ INTERVALS: Tách riêng scan GPIO1 và push sensor
@@ -560,14 +564,23 @@ interval:
             lambda: return wifi::global_wifi_component->is_connected();
           then:
             - http_request.post:
-                url: "http://nhasam.id.vn/aura-api/esp-push"
+                url: !lambda |-
+                  const std::string ssid = id(connected_ssid).state;
+                  const bool at_home = ssid == "3324 2.4ghz" || ssid == "3324_2.4ghz";
+                  const uint32_t now = millis();
+                  const bool retry_lan = id(g_lan_retry_after) == 0 ||
+                    (int32_t)(now - id(g_lan_retry_after)) >= 0;
+                  const bool use_lan = at_home && (id(g_lan_route_healthy) || retry_lan);
+                  id(g_last_poll_used_lan) = use_lan;
+                  return use_lan ? "http://192.168.1.48:8090/aura-api/esp-push" :
+                    "https://nhasam.id.vn/aura-api/esp-push";
                 capture_response: true
                 max_response_buffer_size: 8192
                 request_headers:
                   Content-Type: application/json
                 body: !lambda |-
-                  char buf[256];
-                  snprintf(buf, sizeof(buf), "{\"device_key\":\"cam-bien-pn2\",\"poll_only\":true,\"voltage\":%.3f}", id(led_mean).state);
+                  char buf[384];
+                  snprintf(buf, sizeof(buf), "{\"device_key\":\"cam-bien-pn2\",\"poll_only\":true,\"voltage\":%.3f,\"ac_state\":\"%s\",\"supports_ir_ack\":true,\"acked_ir_ids\":%s}", id(led_mean).state, id(g_ac_state) ? "on" : "off", id(g_ir_ack_json).c_str());
                   return std::string(buf);
                 on_response:
                   then:
@@ -575,9 +588,30 @@ interval:
                         condition:
                           lambda: return response->status_code == 200;
                         then:
+                          - lambda: |-
+                              id(g_push_ok) = true;
+                              if (id(g_last_poll_used_lan)) {
+                                id(g_lan_route_healthy) = true;
+                                id(g_lan_retry_after) = 0;
+                              }
                           - script.execute:
                               id: parse_ir_response
                               body: !lambda return body;
+                        else:
+                          - lambda: |-
+                              id(g_push_ok) = false;
+                              if (id(g_last_poll_used_lan)) {
+                                id(g_lan_route_healthy) = false;
+                                id(g_lan_retry_after) = millis() + 30000;
+                              }
+                on_error:
+                  then:
+                    - lambda: |-
+                        id(g_push_ok) = false;
+                        if (id(g_last_poll_used_lan)) {
+                          id(g_lan_route_healthy) = false;
+                          id(g_lan_retry_after) = millis() + 30000;
+                        }
 
   # ── 3. Push nhiệt/ẩm/áp — adaptive: 5s khi có lệnh IR, 60s bình thường ──
   - interval: 5s
