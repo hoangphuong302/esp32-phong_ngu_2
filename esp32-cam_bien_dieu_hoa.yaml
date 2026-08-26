@@ -11,49 +11,17 @@ esphome:
     then:
       - script.execute: led_indicator_loop
       - lambda: |-
-          id(ble_tracker)->start_scan();
 
 esp32:
   board: esp32-c3-devkitm-1
   framework:
     type: arduino
 
-esp32_ble_tracker:
-  id: ble_tracker
-  scan_parameters:
-    interval: 100ms
-    window: 40ms
-    continuous: true
-    active: true
-
-ble_client:
-  - mac_address: FF:FF:DE:0D:04:AF
-    id: led_strip
-    auto_connect: false
-    on_connect:
-      then:
-        - lambda: |-
-            id(g_ble_connected) = true;
-            id(g_ble_connecting) = false;
-            id(led_strip)->set_auto_connect(false);
-            id(ble_tracker)->stop_scan();
-            ESP_LOGI("ble", "BLE LED strip CONNECTED!");
-    on_disconnect:
-      then:
-        - lambda: |-
-            id(g_ble_connected) = false;
-            id(g_ble_connecting) = false;
-            id(led_strip)->set_auto_connect(false);
-            // wifi::global_wifi_component->set_power_save_mode(wifi::WIFI_POWER_SAVE_NONE); // Restore full WiFi
-            id(ble_tracker)->stop_scan();
-            ESP_LOGW("ble", "BLE LED strip DISCONNECTED!");
-
 # 🔇 Logger set to DEBUG with filters to prevent verbosity
 logger:
   level: DEBUG
   baud_rate: 0
   logs:
-    esp32_ble_tracker: WARN
     sensor: INFO
     adc: INFO
     i2c: INFO
@@ -72,17 +40,6 @@ api:
         - remote_transmitter.transmit_raw:
             carrier_frequency: 38kHz
             code: !lambda "return command;"
-    - service: send_ble_command
-      variables:
-        command: int[]
-      then:
-        - script.execute: blink_led
-        - lambda: |-
-            std::vector<uint8_t> bytes;
-            for (int val : command) {
-              bytes.push_back((uint8_t)val);
-            }
-            id(write_ble_command).execute(bytes);
 
 # ✅ HTTP client — ESP32 chủ động PUSH lên nhasam.id.vn
 http_request:
@@ -126,10 +83,6 @@ globals:
     type: bool
     restore_value: false
     initial_value: 'false'
-  # IR queue acknowledgement: prevents the server retransmitting a full Midea
-  # frame after this node has already emitted it.
-  - { id: g_ir_ack_json, type: std::string, restore_value: false, initial_value: '"[]"' }
-  - { id: g_last_ir_command_id, type: std::string, restore_value: false, initial_value: '""' }
 
   # Cờ đẩy sensor nhanh khi có lệnh IR từ web
   - id: g_fast_sensor_push
@@ -144,23 +97,8 @@ globals:
     initial_value: '0'
 
   # Cờ kết nối BLE của LED chuột
-  - id: g_ble_connected
-    type: bool
-    restore_value: false
-    initial_value: 'false'
-
   # Cờ đang kết nối BLE
-  - id: g_ble_connecting
-    type: bool
-    restore_value: false
-    initial_value: 'false'
-
   # Thời điểm hoạt động BLE cuối cùng
-  - id: g_last_ble_activity
-    type: uint32_t
-    restore_value: false
-    initial_value: '0'
-
 # ══════════════════════════════════════════════════════════════
 # 📦 SCRIPTS: Push sự kiện lên nhasam.id.vn
 # ══════════════════════════════════════════════════════════════
@@ -174,26 +112,7 @@ script:
             DynamicJsonDocument doc(16384);
             DeserializationError error = deserializeJson(doc, body);
             if (!error) {
-              if (doc.containsKey("ir_command_items")) {
-                for (JsonObject item : doc["ir_command_items"].as<JsonArray>()) {
-                  std::string command_id = item["id"] | "";
-                  JsonArray cmd = item["code"];
-                  if (command_id.empty()) continue;
-                  if (command_id != id(g_last_ir_command_id)) {
-                    std::vector<int32_t> pulses;
-                    for (int32_t pulse : cmd) pulses.push_back(pulse);
-                    if (pulses.empty()) continue;
-                    auto call = id(main_transmitter).transmit();
-                    call.get_data()->set_carrier_frequency(38000);
-                    call.get_data()->set_data(pulses);
-                    call.perform();
-                    id(g_last_ir_command_id) = command_id;
-                    id(g_fast_sensor_push) = true;
-                    id(g_fast_push_start_time) = millis();
-                  }
-                  id(g_ir_ack_json) = "[\"" + command_id + "\"]";
-                }
-              } else if (doc.containsKey("ir_commands")) {
+              if (doc.containsKey("ir_commands")) {
                 JsonArray ir_cmds = doc["ir_commands"];
                 for (JsonArray cmd : ir_cmds) {
                   std::vector<int32_t> pulses;
@@ -219,89 +138,12 @@ script:
                   }
                 }
               }
-              if (doc.containsKey("ble_commands")) {
-                JsonArray ble_cmds = doc["ble_commands"];
-                for (JsonArray cmd : ble_cmds) {
-                  std::vector<uint8_t> bytes;
-                  for (uint8_t b : cmd) {
-                    bytes.push_back(b);
-                  }
-                  if (!bytes.empty()) {
-                    ESP_LOGI("ble", "Sending pending BLE command from queue, size: %d", bytes.size());
-                    id(write_ble_command).execute(bytes);
-                  }
-                }
-              }
             }
           }
 
   - id: restore_wifi
     then:
       - wifi.enable:
-
-  - id: write_ble_command
-    mode: queued
-    parameters:
-      cmd: std::vector<uint8_t>
-    then:
-      - lambda: |-
-          if (!id(g_ble_connected) && !id(g_ble_connecting)) {
-            ESP_LOGI("coexist", "Starting BLE session — pausing WiFi radio (power save MAX)...");
-            id(g_ble_connecting) = true;
-            id(g_last_ble_activity) = millis();
-            // Let ESPHome learn the advertised address type before opening GATT.
-            id(led_strip)->set_auto_connect(true);
-            id(ble_tracker)->start_scan();
-            // Pause WiFi radio — stay associated but sleep between beacons
-            // wifi::global_wifi_component->set_power_save_mode(wifi::WIFI_POWER_SAVE_HIGH);
-          } else {
-            // Already in BLE session, just update activity timer
-            id(g_last_ble_activity) = millis();
-          }
-      - if:
-          condition:
-            lambda: |-
-              return !id(g_ble_connected);
-          then:
-            - wait_until:
-                condition:
-                  lambda: |-
-                    return id(g_ble_connected) || !id(g_ble_connecting);
-                timeout: 25s
-            - if:
-                condition:
-                  lambda: return !id(g_ble_connected);
-                then:
-                  - lambda: |-
-                      ESP_LOGE("coexist", "BLE mouse LED connection timed out; resetting session");
-                      id(led_strip)->set_auto_connect(false);
-                      id(led_strip)->disconnect();
-                      id(g_ble_connecting) = false;
-                      id(ble_tracker)->stop_scan();
-      - if:
-          condition:
-            lambda: |-
-              return id(g_ble_connected);
-          then:
-            - lambda: |-
-                id(g_last_ble_activity) = millis();
-            - ble_client.ble_write:
-                id: led_strip
-                service_uuid: 'FFE5'
-                characteristic_uuid: 'FFE9'
-                value: !lambda |-
-                  return cmd;
-            - lambda: |-
-                ESP_LOGI("ble", "BLE command written to FFE9 (%u bytes)", cmd.size());
-            - delay: 200ms
-            - lambda: |-
-                if (cmd.size() == 3 && cmd[0] == 0xCC && cmd[1] == 0x24 && cmd[2] == 0x33) {
-                  ESP_LOGI("coexist", "Power OFF command written. Disconnecting BLE session immediately...");
-                  id(led_strip)->set_auto_connect(false);
-                  id(led_strip)->disconnect();
-                  id(g_ble_connected) = false;
-                  id(g_ble_connecting) = false;
-                }
 
   - id: led_indicator_loop
     mode: restart
@@ -572,8 +414,6 @@ wifi:
   # Kết nối nhanh, không scan lại từ đầu khi đổi IP hoặc mất điện cắm lại
   fast_connect: true
 
-
-
   # 🔁 Không tự reboot khi không có ai kết nối vào AP fallback
   # ESP32 cứ chạy nội bộ, chờ WiFi xuất hiện trở lại
   reboot_timeout: 0s
@@ -594,11 +434,6 @@ one_wire:
     id: dallas_hub
 
 sensor:
-  - platform: ble_rssi
-    mac_address: FF:FF:DE:0D:04:AF
-    name: "LED Strip RSSI"
-    id: led_strip_rssi
-
   # ── DS18B20: Nhiệt độ phòng ngủ 2 ──
   - platform: dallas_temp
     one_wire_id: dallas_hub
@@ -609,19 +444,6 @@ sensor:
       - delta: 0.1
 
   # ── Xiaomi BLE Temperature & Humidity (Miaomiaoce T2) ──
-  - platform: xiaomi_lywsd03mmc
-    mac_address: "A4:C1:38:50:AA:AF"
-    bindkey: "e0b40d6a649749b3116cd9326f00a2b5"
-    temperature:
-      name: "Nhiệt độ Xiaomi PN2"
-      id: xiaomi_temp
-    humidity:
-      name: "Độ ẩm Xiaomi PN2"
-      id: xiaomi_humi
-    battery_level:
-      name: "Pin Xiaomi PN2"
-      id: xiaomi_bat
-
   # ── GPIO1 diagnostics: mean và std dev — cập nhật từ interval lambda ──
   # update_interval: never → chỉ publish khi interval lambda gọi publish_state()
   - platform: template
@@ -730,16 +552,12 @@ interval:
             id(push_ac_off).execute();  // 🔽 ON → OFF
           }
 
-  # ── 2. Poll lệnh IR/BLE pending mỗi 1.5 giây ──
-  # Skip poll khi BLE đang active để nhường radio cho BLE (ESP32-C3 shared radio)
-  - interval: 1500ms
+  # ── 2. Poll lệnh IR pending mỗi 250 ms ──
+  - interval: 250ms
     then:
       - if:
           condition:
-            lambda: |-
-              // Skip poll during BLE session — WiFi radio is paused
-              if (id(g_ble_connected) || id(g_ble_connecting)) return false;
-              return wifi::global_wifi_component->is_connected();
+            lambda: return wifi::global_wifi_component->is_connected();
           then:
             - http_request.post:
                 url: "http://nhasam.id.vn/aura-api/esp-push"
@@ -749,12 +567,7 @@ interval:
                   Content-Type: application/json
                 body: !lambda |-
                   char buf[256];
-                  float rssi_val = id(led_strip_rssi).state;
-                  std::string rssi_str = "null";
-                  if (!std::isnan(rssi_val)) {
-                    rssi_str = std::to_string((int)rssi_val);
-                  }
-                  snprintf(buf, sizeof(buf), "{\"device_key\":\"cam-bien-pn2\",\"poll_only\":true,\"voltage\":%.3f,\"ble_connected\":%s,\"led_rssi\":%s,\"supports_ir_ack\":true,\"acked_ir_ids\":%s}", id(led_mean).state, id(g_ble_connected) ? "true" : "false", rssi_str.c_str(), id(g_ir_ack_json).c_str());
+                  snprintf(buf, sizeof(buf), "{\"device_key\":\"cam-bien-pn2\",\"poll_only\":true,\"voltage\":%.3f}", id(led_mean).state);
                   return std::string(buf);
                 on_response:
                   then:
@@ -774,7 +587,6 @@ interval:
           if (std::isnan(id(cb_temp).state)) return;
 
           // Bỏ qua nếu đang xử lý hoặc đang kết nối BLE để tránh nhiễu WiFi/BLE
-          if (id(g_ble_connected) || id(g_ble_connecting)) return;
 
           static uint32_t last_push = 0;
           uint32_t now = millis();
@@ -801,37 +613,9 @@ interval:
             id(push_sensors_to_ha).execute();
           }
 
-  - interval: 1s
-    then:
-      - lambda: |-
-          uint32_t now = millis();
-
-          
-          // 1. Session timeout: disconnect BLE after 10s inactivity, resume WiFi
-          if (id(g_ble_connected) && (now - id(g_last_ble_activity) > 10000)) {
-            ESP_LOGI("coexist", "BLE idle 10s. Disconnecting BLE, resuming WiFi full speed...");
-            id(led_strip)->set_auto_connect(false);
-            id(led_strip)->disconnect();
-            id(g_ble_connected) = false;
-            id(g_ble_connecting) = false;
-            // wifi::global_wifi_component->set_power_save_mode(wifi::WIFI_POWER_SAVE_NONE); // Resume full WiFi
-            id(ble_tracker)->stop_scan();
-          }
-          
-          // 2. Connection timeout: stuck connecting > 30s, reset and resume WiFi
-          if (id(g_ble_connecting) && !id(g_ble_connected) && (now - id(g_last_ble_activity) > 30000)) {
-            ESP_LOGE("coexist", "BLE connection timeout. Resuming WiFi full speed...");
-            id(led_strip)->set_auto_connect(false);
-            id(led_strip)->disconnect();
-            id(g_ble_connecting) = false;
-            // wifi::global_wifi_component->set_power_save_mode(wifi::WIFI_POWER_SAVE_NONE); // Resume full WiFi
-            id(ble_tracker)->stop_scan();
-          }
-
 remote_transmitter:
   id: main_transmitter
   pin: GPIO4
   carrier_duty_percent: 50%
   non_blocking: true
-
 
