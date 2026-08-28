@@ -45,7 +45,7 @@ api:
 # ✅ HTTP client — ESP32 chủ động PUSH lên nhasam.id.vn
 http_request:
   useragent: "esphome/cam-bien-pn2"
-  timeout: 3s
+  timeout: 2s
   verify_ssl: false
 
 # ══════════════════════════════════════════════════════════════
@@ -90,6 +90,7 @@ globals:
   - { id: g_lan_route_healthy, type: bool, restore_value: false, initial_value: 'true' }
   - { id: g_lan_retry_after, type: uint32_t, restore_value: false, initial_value: '0' }
   - { id: g_last_poll_used_lan, type: bool, restore_value: false, initial_value: 'true' }
+  - { id: g_ir_poll_in_flight, type: bool, restore_value: false, initial_value: 'false' }
 
   # Cờ đẩy sensor nhanh khi có lệnh IR từ web
   - id: g_fast_sensor_push
@@ -227,7 +228,13 @@ script:
   - id: push_ac_on
     then:
       - http_request.post:
-          url: "http://nhasam.id.vn/aura-api/esp-push"
+          url: !lambda |-
+            char local_ip[network::IP_ADDRESS_BUFFER_SIZE];
+            wifi::global_wifi_component->wifi_sta_ip_addresses()[0].str_to(local_ip);
+            const bool at_home = strncmp(local_ip, "192.168.1.", 10) == 0;
+            return at_home && id(g_lan_route_healthy)
+              ? "http://192.168.1.42:8090/aura-api/esp-push"
+              : "https://nhasam.id.vn/aura-api/esp-push";
           capture_response: true
           request_headers:
             Content-Type: application/json
@@ -263,7 +270,13 @@ script:
   - id: push_ac_off
     then:
       - http_request.post:
-          url: "http://nhasam.id.vn/aura-api/esp-push"
+          url: !lambda |-
+            char local_ip[network::IP_ADDRESS_BUFFER_SIZE];
+            wifi::global_wifi_component->wifi_sta_ip_addresses()[0].str_to(local_ip);
+            const bool at_home = strncmp(local_ip, "192.168.1.", 10) == 0;
+            return at_home && id(g_lan_route_healthy)
+              ? "http://192.168.1.42:8090/aura-api/esp-push"
+              : "https://nhasam.id.vn/aura-api/esp-push";
           capture_response: true
           request_headers:
             Content-Type: application/json
@@ -300,7 +313,13 @@ script:
   - id: push_sensors_to_ha
     then:
       - http_request.post:
-          url: "http://nhasam.id.vn/aura-api/esp-push"
+          url: !lambda |-
+            char local_ip[network::IP_ADDRESS_BUFFER_SIZE];
+            wifi::global_wifi_component->wifi_sta_ip_addresses()[0].str_to(local_ip);
+            const bool at_home = strncmp(local_ip, "192.168.1.", 10) == 0;
+            return at_home && id(g_lan_route_healthy)
+              ? "http://192.168.1.42:8090/aura-api/esp-push"
+              : "https://nhasam.id.vn/aura-api/esp-push";
           capture_response: true
           request_headers:
             Content-Type: application/json
@@ -562,18 +581,20 @@ interval:
     then:
       - if:
           condition:
-            lambda: return wifi::global_wifi_component->is_connected();
+            lambda: return wifi::global_wifi_component->is_connected() && !id(g_ir_poll_in_flight);
           then:
+            - lambda: id(g_ir_poll_in_flight) = true;
             - http_request.post:
                 url: !lambda |-
-                  const std::string ssid = id(connected_ssid).state;
-                  const bool at_home = ssid == "3324 2.4ghz" || ssid == "3324_2.4ghz";
+                  char local_ip[network::IP_ADDRESS_BUFFER_SIZE];
+                  wifi::global_wifi_component->wifi_sta_ip_addresses()[0].str_to(local_ip);
+                  const bool at_home = strncmp(local_ip, "192.168.1.", 10) == 0;
                   const uint32_t now = millis();
                   const bool retry_lan = id(g_lan_retry_after) == 0 ||
                     (int32_t)(now - id(g_lan_retry_after)) >= 0;
                   const bool use_lan = at_home && (id(g_lan_route_healthy) || retry_lan);
                   id(g_last_poll_used_lan) = use_lan;
-                  return use_lan ? "http://192.168.1.48:8090/aura-api/esp-push" :
+                  return use_lan ? "http://192.168.1.42:8090/aura-api/esp-push" :
                     "https://nhasam.id.vn/aura-api/esp-push";
                 capture_response: true
                 max_response_buffer_size: 8192
@@ -585,6 +606,7 @@ interval:
                   return std::string(buf);
                 on_response:
                   then:
+                    - lambda: id(g_ir_poll_in_flight) = false;
                     - if:
                         condition:
                           lambda: return response->status_code == 200;
@@ -608,6 +630,7 @@ interval:
                 on_error:
                   then:
                     - lambda: |-
+                        id(g_ir_poll_in_flight) = false;
                         id(g_push_ok) = false;
                         if (id(g_last_poll_used_lan)) {
                           id(g_lan_route_healthy) = false;
